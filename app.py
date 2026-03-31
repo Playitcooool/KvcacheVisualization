@@ -65,7 +65,7 @@ def init_session_state():
             st.session_state[key] = value
 
 
-def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str = "", device: str = "auto"):
+def load_model(model_type: str, model_name: str = "Qwen/Qwen3-0.6B", checkpoint_path: str = "", device: str = "auto"):
     """加载模型"""
     try:
         if model_type == "huggingface":
@@ -127,7 +127,7 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
         st.session_state.token_ids = []
 
         # 编码 prompt
-        input_ids = tokenizer.encode(prompt, return_tensors='pt')
+        input_ids = tokenizer.encode(prompt, return_tensors='pt').to(model.device)
         input_length = input_ids.shape[1]
 
         # 注册 hooks
@@ -215,11 +215,25 @@ with st.sidebar:
     )
 
     if model_type == "huggingface":
-        model_name = st.text_input("模型名称", value="gpt2")
+        model_name = st.text_input(
+            "模型名称或本地路径",
+            value="Qwen/Qwen3-0.6B",
+            help="HuggingFace 模型名 (如 Qwen/Qwen3-0.6B) 或本地模型目录路径"
+        )
         checkpoint_path = ""
     else:
         model_name = "custom"
-        checkpoint_path = st.text_input("Checkpoint 路径", value="")
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            checkpoint_path = st.text_input(
+                "Checkpoint 路径",
+                value="",
+                help="本地 .pt/.pth checkpoint 文件路径"
+            )
+        with col2:
+            st.write("")  # spacing
+            if st.button("📁", help="选择文件"):
+                st.info("请在下方输入完整路径，或使用文件浏览器选择")
 
     if st.button("🚀 加载模型"):
         with st.spinner("加载中..."):

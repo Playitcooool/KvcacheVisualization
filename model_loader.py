@@ -128,9 +128,10 @@ class PyTorchLoader(ModelLoader):
         self.device = get_device_from_string(device)
         self.loader_type = "pytorch"
         self._model = None
+        self._tokenizer = None
         self._config = None
 
-    def load(self, device: Union[str, torch.device] = "auto") -> Tuple[Any, None, Dict]:
+    def load(self, device: Union[str, torch.device] = "auto") -> Tuple[Any, Any, Dict]:
         """加载 PyTorch checkpoint"""
         if not os.path.exists(self.checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
@@ -139,6 +140,14 @@ class PyTorchLoader(ModelLoader):
         target_device = get_device_from_string(device) if device != "auto" else self.device
 
         checkpoint = torch.load(self.checkpoint_path, map_location=target_device)
+
+        # 支持 safetensors 格式
+        if self.checkpoint_path.endswith('.safetensors'):
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(self.checkpoint_path, device=str(target_device))
+            except ImportError:
+                raise ImportError("请安装 safetensors: uv pip install safetensors")
 
         # 尝试不同的 key 格式
         if 'model_state_dict' in checkpoint:
@@ -151,20 +160,97 @@ class PyTorchLoader(ModelLoader):
         # 从 state_dict 推断配置
         self._infer_config(state_dict)
 
-        # TODO: 需要一个模型工厂来重建模型
-        # 这里暂时返回 None，实际使用时需要根据 checkpoint 结构重建
+        # 尝试加载为 HuggingFace 格式模型
+        # 如果 checkpoint 目录包含 config.json，则是 HuggingFace 格式
+        checkpoint_dir = os.path.dirname(self.checkpoint_path)
+        config_path = os.path.join(checkpoint_dir, "config.json")
+
+        if os.path.exists(config_path):
+            # 是 HuggingFace 本地模型
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
+            self._model = AutoModelForCausalLM.from_pretrained(checkpoint_dir)
+            self._model = self._model.to(target_device)
+            self._model.eval()
+            self.device = target_device
+            return self._model, self._tokenizer, self.get_config()
+
+        # 纯 PyTorch checkpoint - 尝试作为 GPT-2 加载
+        try:
+            from transformers import GPT2LMHeadModel, GPT2Tokenizer
+            # 尝试推断是否是 GPT-2 架构
+            sample_key = list(state_dict.keys())[0] if state_dict else ""
+
+            if any(k in sample_key for k in ['attn.c_attn', 'attn.qkv_proj', 'transformer.h']):
+                # 看起来是 GPT-2 架构
+                self._model = GPT2LMHeadModel.from_pretrained("gpt2")
+                self._model.load_state_dict(state_dict)
+                self._model = self._model.to(target_device)
+                self._model.eval()
+                self._tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+                self._tokenizer.pad_token = self._tokenizer.eos_token
+                self.device = target_device
+                return self._model, self._tokenizer, self.get_config()
+        except Exception as e:
+            print(f"Failed to load as GPT-2: {e}")
+
+        # 无法识别格式，返回配置信息
         return None, None, self._config
 
     def _infer_config(self, state_dict: Dict[str, torch.Tensor]):
         """从 state_dict 推断模型配置"""
-        sample_keys = list(state_dict.keys())[:10]
+        if not state_dict:
+            self._config = {
+                'num_layers': 12,
+                'num_heads': 12,
+                'hidden_size': 768,
+                'vocab_size': 50257,
+            }
+            return
+
+        # 尝试从 key 模式推断层数
+        layer_keys = [k for k in state_dict.keys() if '.h.' in k or '.layer.' in k]
+        max_layer = 0
+        for k in layer_keys:
+            parts = k.split('.')
+            for p in parts:
+                if p.isdigit():
+                    max_layer = max(max_layer, int(p))
+
+        num_layers = max_layer + 1 if max_layer > 0 else 12
+
+        # 尝试获取隐藏维度
+        hidden_size = 768
+        for k in ['attn.c_attn.weight', 'qkv_proj.weight', 'transformer.wte.weight']:
+            if k in state_dict:
+                hidden_size = state_dict[k].shape[0]
+                break
+
+        # 尝试获取 vocab 大小
+        vocab_size = 50257
+        for k in ['transformer.wte.weight', 'embed_tokens.weight']:
+            if k in state_dict:
+                vocab_size = state_dict[k].shape[0]
+                break
+
         self._config = {
-            'num_layers': 12,  # 默认值
+            'num_layers': num_layers,
             'num_heads': 12,
-            'hidden_size': 768,
-            'vocab_size': 50257,
+            'hidden_size': hidden_size,
+            'vocab_size': vocab_size,
         }
-        pass
+
+    @property
+    def model(self):
+        if self._model is None:
+            self._model, _, _ = self.load()
+        return self._model
+
+    @property
+    def tokenizer(self):
+        if self._tokenizer is None:
+            _, self._tokenizer, _ = self.load()
+        return self._tokenizer
 
     def get_config(self) -> Dict[str, Any]:
         if self._config is None:
