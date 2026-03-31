@@ -29,11 +29,11 @@ def test_register_hooks():
     class DummyAttention(nn.Module):
         def __init__(self):
             super().__init__()
-            self.k_proj = nn.Linear(64, 64)
-            self.v_proj = nn.Linear(64, 64)
+            self.attn_k_proj = nn.Linear(64, 64)
+            self.attn_v_proj = nn.Linear(64, 64)
 
         def forward(self, x):
-            return self.k_proj(x), self.v_proj(x)
+            return self.attn_k_proj(x), self.attn_v_proj(x)
 
     model = DummyAttention()
     extractor = KVCacheExtractor(num_layers=1, num_heads=1, head_dim=64)
