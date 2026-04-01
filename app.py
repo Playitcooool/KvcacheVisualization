@@ -6,7 +6,7 @@ import os
 
 from model_loader import ModelLoader, HuggingFaceLoader
 from kvcache_extractor import KVCacheExtractor
-from kvcache_simulator import KVCacheSimulator
+from kvcache_simulator import KVCacheSimulator, MAX_HISTORY_LENGTH
 from visualizer import KVCacheVisualizer
 from device_utils import get_available_device, list_available_devices
 from i18n import t, get_text, TRANSLATIONS
@@ -211,8 +211,7 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         max_new_tokens: 最大生成 token 数
         batch_size: 每批生成的 token 数
     """
-    # 导入 MAX_HISTORY_LENGTH
-    from kvcache_simulator import MAX_HISTORY_LENGTH
+    # MAX_HISTORY_LENGTH imported at top of file
 
     if st.session_state.generation_complete or st.session_state.is_generating:
         return
@@ -278,6 +277,8 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
 
             # 检查历史长度限制
             if len(simulator.history) >= MAX_HISTORY_LENGTH:
+                st.session_state.generation_complete = True
+                st.session_state.is_generating = False
                 break
 
             if pos <= len(extractor.kvcache_history):
