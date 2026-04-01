@@ -6,6 +6,12 @@ import os
 
 from device_utils import get_device_from_string, DeviceManager, list_available_devices
 
+# 设置本地模型缓存目录
+LOCAL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+os.makedirs(LOCAL_MODELS_DIR, exist_ok=True)
+os.environ["HF_HOME"] = LOCAL_MODELS_DIR
+os.environ["TRANSFORMERS_CACHE"] = os.path.join(LOCAL_MODELS_DIR, "transformers")
+
 
 class ModelLoader(ABC):
     """模型加载抽象基类"""
