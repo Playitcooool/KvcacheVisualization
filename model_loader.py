@@ -174,12 +174,16 @@ class HuggingFaceLoader(ModelLoader):
 
     def load(self, device: Union[str, torch.device] = "auto") -> Tuple[Any, Any, Dict]:
         """加载 HuggingFace 模型和 tokenizer，自动检测量化"""
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
         # 解析设备
         target_device = get_device_from_string(device) if device != "auto" else self.device
         if target_device.type == 'cuda':
             target_device = torch.device("cuda:0")
+
+        # 获取配置以确定模型架构
+        config = self.get_config()
+        architecture = config.get('architecture', 'causal')
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self._tokenizer.pad_token is None:
@@ -188,12 +192,18 @@ class HuggingFaceLoader(ModelLoader):
         # 自动检测量化
         quantization = self._detect_quantization()
 
+        # 根据架构选择模型类
+        if architecture == "encoder-decoder":
+            model_class = AutoModelForSeq2SeqLM
+        else:
+            model_class = AutoModelForCausalLM
+
         # 加载模型
         if quantization:
-            self._model = self._load_quantized_model(quantization, target_device)
+            self._model = self._load_quantized_model(quantization, target_device, model_class)
         else:
             # 普通加载
-            self._model = AutoModelForCausalLM.from_pretrained(
+            self._model = model_class.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float32,
             )
@@ -202,11 +212,15 @@ class HuggingFaceLoader(ModelLoader):
         self._model.eval()
         self.device = target_device
 
-        config = self.get_config()
         return self._model, self._tokenizer, config
 
-    def _load_quantized_model(self, quantization: str, device: torch.device) -> Any:
+    def _load_quantized_model(self, quantization: str, device: torch.device, model_class: Any = None) -> Any:
         """加载量化模型"""
+        from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM
+
+        if model_class is None:
+            model_class = AutoModelForCausalLM
+
         quant_libs = check_quantization_available()
 
         # 4-bit/8-bit 量化 (bitsandbytes)
@@ -226,8 +240,7 @@ class HuggingFaceLoader(ModelLoader):
 
             self._quantization_info = f"{quant_desc} (bitsandbytes)"
 
-            from transformers import AutoModelForCausalLM
-            model = AutoModelForCausalLM.from_pretrained(
+            model = model_class.from_pretrained(
                 self.model_name,
                 load_in_4bit=load_in_4bit,
                 load_in_8bit=load_in_8bit,
