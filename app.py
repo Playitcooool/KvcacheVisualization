@@ -161,10 +161,12 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
         simulator.reset()
         st.session_state.tokens = []
         st.session_state.token_ids = []
+        st.session_state.current_position = 0
 
         # 编码 prompt
         input_ids = tokenizer.encode(prompt, return_tensors='pt').to(model.device)
         input_length = input_ids.shape[1]
+        st.session_state.prompt_length = input_length
 
         # 创建 attention mask (全1，表示所有token都参与attention)
         attention_mask = torch.ones_like(input_ids)
@@ -244,8 +246,9 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         extractor = st.session_state.extractor
         simulator = st.session_state.simulator
 
-        # 如果是新的生成，清空之前的历史
-        if not st.session_state.tokens:
+        # 如果是新的生成或 prompt 变了，清空之前的历史
+        if (not st.session_state.tokens or
+            st.session_state.streaming_prompt != prompt):
             extractor.clear_history()
             simulator.reset()
             st.session_state.tokens = []
@@ -258,10 +261,17 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
             st.session_state.prompt_length = input_ids.shape[1]
             st.session_state.generation_input_ids = input_ids
             st.session_state.attention_mask = attention_mask
+            st.session_state.streaming_prompt = prompt
         else:
             # 继续之前的生成，使用累积的 input_ids
             input_ids = st.session_state.generation_input_ids
             attention_mask = st.session_state.attention_mask
+
+        # 安全检查
+        if input_ids is None or attention_mask is None:
+            st.error("输入状态异常，请刷新页面重试")
+            st.session_state.is_generating = False
+            return
 
         # 计算剩余需要生成的 token 数
         remaining = max_new_tokens - st.session_state.current_position
