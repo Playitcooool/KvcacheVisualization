@@ -82,11 +82,17 @@ def init_session_state():
         'streaming_prompt': '',
         'streaming_max_tokens': 50,
         'streaming_batch_size': 5,
+        'generated_text': '',  # 存储解码后的完整文本
     }
 
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+def clean_bpe_token(token: str) -> str:
+    """将 BPE token 转换为可读文本（Ġ 替换为空格）"""
+    return token.replace("Ġ", " ").replace("Ċ", "\n")
 
 
 def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str = "", device: str = "auto", quantization: str = None):
@@ -192,6 +198,7 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
                 simulator.add_entry(pos, k, v, token_id, token_str)
 
         st.session_state.tokens = generated_tokens
+        st.session_state.generated_text = generated_text
         st.session_state.token_ids = generated_ids.tolist()
         st.session_state.current_position = len(generated_tokens)
         st.session_state.generation_complete = True
@@ -299,6 +306,9 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         # 更新累积的 input_ids 用于下次生成
         st.session_state.generation_input_ids = output
 
+        # 更新解码文本
+        st.session_state.generated_text = tokenizer.decode(st.session_state.token_ids, skip_special_tokens=True)
+
         # 检查是否完成
         if st.session_state.current_position >= max_new_tokens:
             st.session_state.generation_complete = True
@@ -323,6 +333,7 @@ def reset_simulation():
     st.session_state.current_position = 0
     st.session_state.generation_complete = False
     st.session_state.streaming_pending = False
+    st.session_state.generated_text = ''
     if st.session_state.simulator:
         st.session_state.simulator.reset()
     if st.session_state.extractor:
@@ -565,7 +576,9 @@ else:
 
         st.markdown("**生成结果:**")
         if st.session_state.tokens:
-            tokens_display = " ".join(st.session_state.tokens[:st.session_state.current_position])
+            # 清理 BPE token 并显示
+            cleaned_tokens = [clean_bpe_token(t) for t in st.session_state.tokens[:st.session_state.current_position]]
+            tokens_display = "".join(cleaned_tokens)
             st.markdown(f'<div class="token-display">{tokens_display}</div>', unsafe_allow_html=True)
         else:
             st.info("点击「开始生成」按钮启动")
