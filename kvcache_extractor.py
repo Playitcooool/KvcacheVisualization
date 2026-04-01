@@ -159,6 +159,19 @@ class KVCacheExtractor:
                 entry.token_str = token_str
                 break
 
+    def detect_model_architecture(self, model) -> str:
+        """检测模型架构类型"""
+        model_name_lower = model.__class__.__name__.lower()
+
+        if "t5" in model_name_lower or "flan" in model_name_lower:
+            return "encoder-decoder"  # T5, FLAN-T5, mT5
+        elif "gpt" in model_name_lower or "llama" in model_name_lower or "qwen" in model_name_lower or "bloom" in model_name_lower:
+            return "causal"  # GPT, LLaMA, Qwen, Bloom
+        elif "opt" in model_name_lower:
+            return "causal"  # OPT is causal
+        else:
+            return "causal"  # 默认
+
     def get_cache_summary(self) -> Dict[str, Any]:
         """获取 cache 摘要信息"""
         if not self.kvcache_history:

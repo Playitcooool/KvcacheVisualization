@@ -92,14 +92,30 @@ class HuggingFaceLoader(ModelLoader):
         from transformers import AutoConfig
         config = AutoConfig.from_pretrained(self.model_name)
 
-        # 统一字段名
+        # 检测架构类型
+        model_type = getattr(config, 'model_type', '')
+
+        if model_type in ['t5', 'mt5', 'flan-t5']:
+            # T5 系列
+            num_layers = getattr(config, 'num_layers', 12)
+            num_heads = getattr(config, 'num_heads', 12)
+            hidden_size = getattr(config, 'd_model', 768)
+            architecture = "encoder-decoder"
+        else:
+            # GPT/LLaMA 系列
+            num_layers = getattr(config, 'n_layer', getattr(config, 'num_layers', 12))
+            num_heads = getattr(config, 'n_head', getattr(config, 'num_heads', 12))
+            hidden_size = getattr(config, 'n_embd', getattr(config, 'hidden_size', 768))
+            architecture = "causal"
+
         self._config = {
-            'num_layers': getattr(config, 'n_layer', getattr(config, 'num_layers', 12)),
-            'num_heads': getattr(config, 'n_head', getattr(config, 'num_heads', 12)),
-            'hidden_size': getattr(config, 'n_embd', getattr(config, 'hidden_size', 768)),
+            'num_layers': num_layers,
+            'num_heads': num_heads,
+            'hidden_size': hidden_size,
             'vocab_size': getattr(config, 'vocab_size', 50257),
             'max_position_embeddings': getattr(config, 'n_positions', getattr(config, 'max_position_embeddings', 1024)),
-            'head_dim': getattr(config, 'n_embd', 768) // getattr(config, 'n_head', 12),
+            'head_dim': hidden_size // num_heads if num_heads > 0 else 64,
+            'architecture': architecture,
         }
         if self._quantization_info:
             self._config['quantization'] = self._quantization_info
