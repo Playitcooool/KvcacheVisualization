@@ -239,19 +239,6 @@ with st.sidebar:
         model_name = preset_models[selected_preset]
         st.caption(f"模型名: `{model_name}`")
 
-        # 量化选项
-        st.markdown("**量化方式 (可选):**")
-        quant_options = {
-            "不使用量化 (推荐显存充足时)": None,
-            "4-bit 量化 (bitsandbytes)": "4bit",
-            "8-bit 量化 (bitsandbytes)": "8bit",
-        }
-        quant_selection = st.selectbox("量化", list(quant_options.keys()), label_visibility="collapsed")
-        quantization = quant_options[quant_selection]
-
-        if quantization:
-            st.info(f"使用 {quantization} 量化，节省显存")
-
         checkpoint_path = ""
     else:
         # 本地模型
@@ -292,12 +279,12 @@ with st.sidebar:
     if st.button("🚀 加载模型", type="primary", disabled=not can_load):
         with st.spinner("加载中，请稍候..."):
             if model_source == "🤖 HuggingFace":
-                success, msg = load_model("huggingface", model_name=model_name, device=selected_device, quantization=quantization)
+                success, msg = load_model("huggingface", model_name=model_name, device=selected_device)
             else:
                 if os.path.isdir(local_path):
-                    success, msg = load_model("huggingface", model_name=local_path, device=selected_device, quantization=quantization)
+                    success, msg = load_model("huggingface", model_name=local_path, device=selected_device)
                 else:
-                    success, msg = load_model("pytorch", checkpoint_path=checkpoint_path, device=selected_device, quantization=quantization)
+                    success, msg = load_model("pytorch", checkpoint_path=checkpoint_path, device=selected_device)
         if success:
             st.success(msg)
             st.rerun()

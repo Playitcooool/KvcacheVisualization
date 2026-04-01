@@ -33,8 +33,7 @@ class ModelLoader(ABC):
         """工厂方法创建 loader"""
         if loader_type == "huggingface":
             return HuggingFaceLoader(
-                model_name=kwargs.get("model_name", "gpt2"),
-                quantization=kwargs.get("quantization", None)
+                model_name=kwargs.get("model_name", "gpt2")
             )
         elif loader_type == "pytorch":
             return PyTorchLoader(
@@ -74,14 +73,12 @@ def check_quantization_available():
 
 
 class HuggingFaceLoader(ModelLoader):
-    """HuggingFace 模型加载器，支持量化"""
+    """HuggingFace 模型加载器，支持自动量化检测"""
 
-    def __init__(self, model_name: str = "gpt2", device: Union[str, torch.device] = "auto",
-                 quantization: str = None):
+    def __init__(self, model_name: str = "gpt2", device: Union[str, torch.device] = "auto"):
         self.model_name = model_name
         self.device = get_device_from_string(device)
         self.loader_type = "huggingface"
-        self.quantization = quantization  # None, "4bit", "8bit", "gptq", "awq"
         self._model = None
         self._tokenizer = None
         self._config = None
@@ -103,12 +100,64 @@ class HuggingFaceLoader(ModelLoader):
             'vocab_size': getattr(config, 'vocab_size', 50257),
             'max_position_embeddings': getattr(config, 'n_positions', getattr(config, 'max_position_embeddings', 1024)),
             'head_dim': getattr(config, 'n_embd', 768) // getattr(config, 'n_head', 12),
-            'quantization': self.quantization,
         }
+        if self._quantization_info:
+            self._config['quantization'] = self._quantization_info
         return self._config
 
+    def _detect_quantization(self) -> Optional[str]:
+        """自动检测模型量化格式"""
+        from transformers import AutoConfig
+        import os
+
+        model_path = self.model_name
+
+        # 如果是本地路径，检测目录内容
+        if os.path.isdir(model_path):
+            files = os.listdir(model_path)
+            files_lower = [f.lower() for f in files]
+
+            # 检测量化格式
+            if any('4bit' in f or '-4bit' in f for f in files_lower):
+                return "4bit"
+            if any('8bit' in f or '-8bit' in f for f in files_lower):
+                return "8bit"
+            if any('gptq' in f for f in files_lower):
+                return "gptq"
+            if any('awq' in f for f in files_lower):
+                return "awq"
+
+            # 检查 config.json 中的量化配置
+            config_path = os.path.join(model_path, "config.json")
+            if os.path.exists(config_path):
+                import json
+                with open(config_path) as f:
+                    config = json.load(f)
+                quant_config = config.get("quantization_config", {})
+                if quant_config:
+                    load_in_4bit = quant_config.get("load_in_4bit", False)
+                    load_in_8bit = quant_config.get("load_in_8bit", False)
+                    if load_in_4bit:
+                        return "4bit"
+                    if load_in_8bit:
+                        return "8bit"
+
+        elif isinstance(model_path, str) and not os.path.exists(model_path):
+            # 在线模型名检测
+            name_lower = model_path.lower()
+            if "4bit" in name_lower or "-4bit" in name_lower:
+                return "4bit"
+            if "8bit" in name_lower or "-8bit" in name_lower:
+                return "8bit"
+            if "gptq" in name_lower:
+                return "gptq"
+            if "awq" in name_lower:
+                return "awq"
+
+        return None
+
     def load(self, device: Union[str, torch.device] = "auto") -> Tuple[Any, Any, Dict]:
-        """加载 HuggingFace 模型和 tokenizer，支持量化"""
+        """加载 HuggingFace 模型和 tokenizer，自动检测量化"""
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         # 解析设备
@@ -120,9 +169,12 @@ class HuggingFaceLoader(ModelLoader):
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
-        # 量化加载
-        if self.quantization:
-            self._model = self._load_quantized_model(target_device)
+        # 自动检测量化
+        quantization = self._detect_quantization()
+
+        # 加载模型
+        if quantization:
+            self._model = self._load_quantized_model(quantization, target_device)
         else:
             # 普通加载
             self._model = AutoModelForCausalLM.from_pretrained(
@@ -137,33 +189,28 @@ class HuggingFaceLoader(ModelLoader):
         config = self.get_config()
         return self._model, self._tokenizer, config
 
-    def _load_quantized_model(self, device: torch.device) -> Any:
+    def _load_quantized_model(self, quantization: str, device: torch.device) -> Any:
         """加载量化模型"""
-        from transformers import AutoModelForCausalLM, AutoConfig
-
         quant_libs = check_quantization_available()
 
         # 4-bit/8-bit 量化 (bitsandbytes)
-        if self.quantization in ("4bit", "8bit"):
+        if quantization in ("4bit", "8bit"):
             if not quant_libs['bitsandbytes']:
                 raise ImportError(
-                    "bitsandbytes 未安装。请运行: uv pip install bitsandbytes\n"
-                    "或选择其他量化方式"
+                    f"模型需要 bitsandbytes 量化支持，但未安装。\n"
+                    f"请运行: uv pip install bitsandbytes"
                 )
 
-            import bitsandbytes as bnb
-
-            if self.quantization == "4bit":
-                load_in_4bit = True
-                load_in_8bit = False
+            if quantization == "4bit":
+                load_in_4bit, load_in_8bit = True, False
                 quant_desc = "4-bit"
             else:
-                load_in_4bit = False
-                load_in_8bit = True
+                load_in_4bit, load_in_8bit = False, True
                 quant_desc = "8-bit"
 
-            self._quantization_info = f"{quant_desc}量化 (bitsandbytes)"
+            self._quantization_info = f"{quant_desc} (bitsandbytes)"
 
+            from transformers import AutoModelForCausalLM
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 load_in_4bit=load_in_4bit,
@@ -173,17 +220,16 @@ class HuggingFaceLoader(ModelLoader):
             return model
 
         # GPTQ 量化
-        elif self.quantization == "gptq":
+        elif quantization == "gptq":
             if not quant_libs['auto_gptq']:
                 raise ImportError(
-                    "auto-gptq 未安装。请运行: uv pip install auto-gptq\n"
-                    "或选择其他量化方式"
+                    f"模型需要 auto-gptq 量化支持，但未安装。\n"
+                    f"请运行: uv pip install auto-gptq"
                 )
 
+            self._quantization_info = "GPTQ"
+
             from auto_gptq import AutoGPTQForCausalLM
-
-            self._quantization_info = "GPTQ 量化"
-
             model = AutoGPTQForCausalLM.from_quantized(
                 self.model_name,
                 device_map="auto",
@@ -192,17 +238,16 @@ class HuggingFaceLoader(ModelLoader):
             return model
 
         # AWQ 量化
-        elif self.quantization == "awq":
+        elif quantization == "awq":
             if not quant_libs['awq']:
                 raise ImportError(
-                    "awq 未安装。请运行: uv pip install awq\n"
-                    "或选择其他量化方式"
+                    f"模型需要 awq 量化支持，但未安装。\n"
+                    f"请运行: uv pip install awq"
                 )
 
+            self._quantization_info = "AWQ"
+
             from awq import AutoAWQForCausalLM
-
-            self._quantization_info = "AWQ 量化"
-
             model = AutoAWQForCausalLM.from_quantized(
                 self.model_name,
                 device_map="auto",
@@ -211,7 +256,7 @@ class HuggingFaceLoader(ModelLoader):
             return model
 
         else:
-            raise ValueError(f"不支持的量化方式: {self.quantization}")
+            raise ValueError(f"不支持的量化方式: {quantization}")
 
     @property
     def model(self):
