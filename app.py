@@ -94,10 +94,12 @@ def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str =
     try:
         if model_type == "huggingface":
             loader = ModelLoader.create("huggingface", model_name=model_name, quantization=quantization)
-            model, tokenizer, config = loader.load(device=device)
+            with st.spinner("正在加载模型，如果是首次下载可能需要几分钟..."):
+                model, tokenizer, config = loader.load(device=device)
         else:
             loader = ModelLoader.create("pytorch", checkpoint_path=checkpoint_path)
-            model, tokenizer, config = loader.load(device=device)
+            with st.spinner("正在加载模型..."):
+                model, tokenizer, config = loader.load(device=device)
 
         st.session_state.model_loader = loader
         st.session_state.model = model
@@ -426,6 +428,21 @@ with st.sidebar:
             checkpoint_path = ""
 
     st.markdown("---")
+
+    # 模型缓存状态
+    st.markdown("**📦 模型缓存状态:**")
+    cache_status = st.empty()
+    if model_source == "🤖 HuggingFace":
+        # 检查本地缓存
+        model_cache_path = os.path.join("models", model_name.replace("/", "--"))
+        hf_cache_path = os.path.expanduser(f"~/.cache/huggingface/hub/models--{model_name.replace('/', '--')}")
+
+        if os.path.exists(model_cache_path):
+            cache_status.info(f"✅ 已缓存在本地: `models/`")
+        elif os.path.exists(hf_cache_path):
+            cache_status.info(f"✅ 已缓存在 HF 默认目录")
+        else:
+            cache_status.warning(f"⬇️ 需要下载 ({model_name})")
 
     # 加载按钮
     can_load = (
