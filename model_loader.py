@@ -10,6 +10,9 @@ from device_utils import get_device_from_string, DeviceManager, list_available_d
 LOCAL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 os.makedirs(LOCAL_MODELS_DIR, exist_ok=True)
 
+# 获取默认的 HuggingFace 缓存目录
+HF_CACHE_DIR = os.path.expanduser("~/.cache/huggingface/hub")
+
 
 class ModelLoader(ABC):
     """模型加载抽象基类"""
@@ -88,15 +91,33 @@ class HuggingFaceLoader(ModelLoader):
         self._config = None
         self._quantization_info = None
 
+    def _get_cache_dir(self) -> Optional[str]:
+        """获取缓存目录：优先本地models/，模型不存在则使用默认缓存"""
+        import os
+
+        # 如果是本地路径，不需要指定cache_dir
+        if os.path.isdir(self.model_name):
+            return None
+
+        # 检查模型是否已存在于本地models/目录
+        # HuggingFace会把模型下载到 cache_dir/models/ 下
+        local_model_path = os.path.join(LOCAL_MODELS_DIR, self.model_name.replace("/", "--"))
+        if os.path.exists(local_model_path):
+            return LOCAL_MODELS_DIR
+
+        # 模型不在本地，返回None使用默认缓存
+        return None
+
     def get_config(self) -> Dict[str, Any]:
         """获取模型配置（不加载模型）"""
         if self._config is not None:
             return self._config
 
         from transformers import AutoConfig
+        cache_dir = self._get_cache_dir()
         config = AutoConfig.from_pretrained(
             self.model_name,
-            cache_dir=LOCAL_MODELS_DIR
+            cache_dir=cache_dir
         )
 
         # 检测架构类型
@@ -188,13 +209,16 @@ class HuggingFaceLoader(ModelLoader):
         if target_device.type == 'cuda':
             target_device = torch.device("cuda:0")
 
+        # 获取缓存目录
+        cache_dir = self._get_cache_dir()
+
         # 获取配置以确定模型架构
         config = self.get_config()
         architecture = config.get('architecture', 'causal')
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
-            cache_dir=LOCAL_MODELS_DIR
+            cache_dir=cache_dir
         )
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -216,7 +240,7 @@ class HuggingFaceLoader(ModelLoader):
             self._model = model_class.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float32,
-                cache_dir=LOCAL_MODELS_DIR,
+                cache_dir=cache_dir,
             )
             self._model = self._model.to(target_device)
 
