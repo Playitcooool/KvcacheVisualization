@@ -585,8 +585,7 @@ else:
                         if not st.session_state.generation_complete:
                             st.rerun()
                     else:
-                        with st.spinner("生成中..."):
-                            run_generation_step(prompt, max_new_tokens=batch_size)
+                        run_generation_step(prompt, max_new_tokens=batch_size)
                     st.rerun()
             else:
                 st.success("✓ 生成完成")
