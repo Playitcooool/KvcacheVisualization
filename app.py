@@ -622,7 +622,7 @@ else:
                     )
 
             # Tab 选择
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 矩阵热力图", "📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘"])
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 矩阵热力图", "📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量"])
 
             with tab1:
                 if st.session_state.current_position > 0:
@@ -676,6 +676,14 @@ else:
                     title="KV Cache 综合仪表盘"
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
+            with tab6:
+                if st.session_state.current_position > 0:
+                    fig = st.session_state.visualizer.create_layer_energy_heatmap(
+                        k_cache_list[:st.session_state.current_position],
+                        title="层级能量热力图"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
 # 底部信息
 st.markdown("---")

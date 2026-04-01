@@ -1,5 +1,6 @@
 # visualizer.py
 import plotly.graph_objects as go
+import plotly.express as px
 from plotly.subplots import make_subplots
 import torch
 import numpy as np
@@ -251,4 +252,41 @@ class KVCacheVisualizer:
             cells=dict(values=[row[1] for row in table_data[1:]], fill_color='lavender', align='left', font=dict(size=12))
         ))
         fig.update_layout(title=dict(text=title, x=0.5), width=400, height=300, showlegend=False)
+        return fig
+
+    def create_layer_energy_heatmap(
+        self,
+        k_cache_list: List[torch.Tensor],
+        title: str = "Layer Energy Heatmap"
+    ) -> go.Figure:
+        """创建层级能量热力图 - 展示各层 KV Cache 的 L2 范数"""
+        import numpy as np
+
+        if not k_cache_list:
+            return go.Figure()
+
+        # 计算每层每位置的 L2 范数
+        num_layers = self.num_layers
+        seq_len = len(k_cache_list)
+
+        k_energies = np.zeros((num_layers, seq_len))
+        for pos, k in enumerate(k_cache_list):
+            if k is not None and k.numel() > 0:
+                # 按层计算
+                for layer_idx in range(min(num_layers, k.shape[0] if len(k.shape) > 3 else 1)):
+                    layer_k = k[layer_idx] if len(k.shape) > 3 else k
+                    k_energies[layer_idx, pos] = torch.norm(layer_k).item()
+
+        fig = px.imshow(
+            k_energies,
+            x=[f"Tok {i+1}" for i in range(seq_len)],
+            y=[f"Layer {i+1}" for i in range(num_layers)],
+            title=title,
+            color_continuous_scale="Viridis",
+            aspect="auto"
+        )
+        fig.update_layout(
+            xaxis_title="Token Position",
+            yaxis_title="Layer",
+        )
         return fig
