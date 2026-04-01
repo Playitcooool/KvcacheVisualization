@@ -579,7 +579,8 @@ else:
                         if not st.session_state.generation_complete:
                             st.rerun()
                     else:
-                        run_generation_step(prompt, max_new_tokens=batch_size)
+                        with st.spinner("生成中..."):
+                            run_generation_step(prompt, max_new_tokens=batch_size)
                     st.rerun()
             else:
                 st.success("✓ 生成完成")
@@ -601,6 +602,15 @@ else:
         if st.session_state.tokens:
             progress = st.session_state.current_position / max(len(st.session_state.tokens), 1)
             st.progress(progress, text=f"Token {st.session_state.current_position}/{len(st.session_state.tokens)}")
+
+        # 调试信息
+        if st.session_state.model_loaded and st.session_state.extractor:
+            with st.expander("🔧 调试信息"):
+                history_len = len(st.session_state.extractor.kvcache_history)
+                st.text(f"捕获的 KV Cache 条目数: {history_len}")
+                st.text(f"Token 数量: {len(st.session_state.tokens)}")
+                if st.session_state.simulator:
+                    st.text(f"Simulator 历史长度: {len(st.session_state.simulator.history)}")
 
         # 回放控制
         if st.session_state.generation_complete and st.session_state.simulator:
