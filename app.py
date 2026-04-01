@@ -9,6 +9,10 @@ from kvcache_extractor import KVCacheExtractor
 from kvcache_simulator import KVCacheSimulator
 from visualizer import KVCacheVisualizer
 from device_utils import get_available_device, list_available_devices
+from i18n import t, get_text, TRANSLATIONS
+from theme import get_theme, get_theme_css, get_plotly_template, THEMES
+from exporter import export_to_json, export_to_csv
+from prompts import PROMPT_TEMPLATES, get_template_names, get_template, fill_template
 
 # 页面配置
 st.set_page_config(
@@ -16,6 +20,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# 初始化主题和语言（需要在页面配置之后）
+if "theme" not in st.session_state:
+    st.session_state.theme = "light"
+if "lang" not in st.session_state:
+    st.session_state.lang = "zh"
+
+# 应用主题
+st.markdown(get_theme_css(st.session_state.theme), unsafe_allow_html=True)
 
 # 自定义 CSS
 st.markdown("""
@@ -214,6 +227,20 @@ with st.sidebar:
         format_func=lambda x: f"{x} {'(自动)' if x == 'auto' else ''}"
     )
 
+    # 主题选择
+    theme_display = st.selectbox(
+        t("theme", st.session_state.lang),
+        ["🌞 亮色", "🌙 暗色"] if st.session_state.lang == "zh" else ["Light", "Dark"]
+    )
+    st.session_state.theme = "dark" if "暗" in theme_display or "Dark" in theme_display else "light"
+
+    # 语言选择
+    lang_display = st.selectbox(
+        "Language",
+        ["中文", "English"]
+    )
+    st.session_state.lang = "en" if lang_display == "English" else "zh"
+
     st.markdown("---")
 
     # 模型来源选择
@@ -335,6 +362,21 @@ else:
 
     with col_left:
         st.markdown("### LLM 生成区域")
+
+        # 预设模板
+        lang = st.session_state.lang
+        st.markdown(f"**{t('prompt_templates', lang)}**")
+        template_names = get_template_names(lang)
+        selected_template = st.selectbox(
+            "选择模板" if lang == "zh" else "Select Template",
+            ["-"] + template_names,
+            label_visibility="collapsed"
+        )
+
+        if selected_template != "-" and selected_template in template_names:
+            template = get_template(selected_template, lang)
+            st.info(template.description_zh if lang == "zh" else template.description_en)
+
         prompt = st.text_input("输入 Prompt", value="Hello, how are you?")
 
         # 批量大小
@@ -387,17 +429,49 @@ else:
         if not st.session_state.simulator or not st.session_state.simulator.history:
             st.info("先生成 token 后才能查看 KV Cache 可视化")
         else:
-            # Tab 选择
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 矩阵热力图", "📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘"])
-
             k_cache_list = [h.k_cache for h in st.session_state.simulator.history]
             v_cache_list = [h.v_cache for h in st.session_state.simulator.history]
 
-            # 计算统计数据
+            # 计算统计数据（需要在导出按钮之前）
             stats = st.session_state.visualizer.calculate_cache_stats(
                 k_cache_list[:st.session_state.current_position],
                 v_cache_list[:st.session_state.current_position]
             )
+
+            # 导出按钮
+            lang = st.session_state.lang
+            col_export1, col_export2 = st.columns(2)
+            with col_export1:
+                if st.button(t("export_json", lang)):
+                    json_data = export_to_json(
+                        st.session_state.tokens,
+                        [h.k_cache for h in st.session_state.simulator.history],
+                        [h.v_cache for h in st.session_state.simulator.history],
+                        stats
+                    )
+                    st.download_button(
+                        label="Download JSON",
+                        data=json_data,
+                        file_name="kvcache_export.json",
+                        mime="application/json"
+                    )
+            with col_export2:
+                if st.button(t("export_csv", lang)):
+                    csv_data = export_to_csv(
+                        st.session_state.tokens,
+                        [h.k_cache for h in st.session_state.simulator.history],
+                        [h.v_cache for h in st.session_state.simulator.history],
+                        stats
+                    )
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv_data,
+                        file_name="kvcache_export.csv",
+                        mime="text/csv"
+                    )
+
+            # Tab 选择
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 矩阵热力图", "📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘"])
 
             with tab1:
                 if st.session_state.current_position > 0:
