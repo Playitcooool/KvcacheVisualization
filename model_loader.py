@@ -6,11 +6,9 @@ import os
 
 from device_utils import get_device_from_string, DeviceManager, list_available_devices
 
-# 设置本地模型缓存目录
+# 本地模型缓存目录
 LOCAL_MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 os.makedirs(LOCAL_MODELS_DIR, exist_ok=True)
-os.environ["HF_HOME"] = LOCAL_MODELS_DIR
-os.environ["TRANSFORMERS_CACHE"] = os.path.join(LOCAL_MODELS_DIR, "transformers")
 
 
 class ModelLoader(ABC):
@@ -96,7 +94,10 @@ class HuggingFaceLoader(ModelLoader):
             return self._config
 
         from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(self.model_name)
+        config = AutoConfig.from_pretrained(
+            self.model_name,
+            cache_dir=LOCAL_MODELS_DIR
+        )
 
         # 检测架构类型
         model_type = getattr(config, 'model_type', '')
@@ -191,7 +192,10 @@ class HuggingFaceLoader(ModelLoader):
         config = self.get_config()
         architecture = config.get('architecture', 'causal')
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            cache_dir=LOCAL_MODELS_DIR
+        )
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
@@ -212,6 +216,7 @@ class HuggingFaceLoader(ModelLoader):
             self._model = model_class.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float32,
+                cache_dir=LOCAL_MODELS_DIR,
             )
             self._model = self._model.to(target_device)
 
