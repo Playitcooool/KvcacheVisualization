@@ -83,6 +83,8 @@ def init_session_state():
         'streaming_max_tokens': 50,
         'streaming_batch_size': 5,
         'generated_text': '',  # 存储解码后的完整文本
+        'generation_input_ids': None,
+        'attention_mask': None,
     }
 
     for key, value in defaults.items():
@@ -164,6 +166,9 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
         input_ids = tokenizer.encode(prompt, return_tensors='pt').to(model.device)
         input_length = input_ids.shape[1]
 
+        # 创建 attention mask (全1，表示所有token都参与attention)
+        attention_mask = torch.ones_like(input_ids)
+
         # 注册 hooks
         handles = extractor.register_hooks(model)
 
@@ -171,6 +176,7 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
         with torch.no_grad():
             output = model.generate(
                 input_ids,
+                attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=True,
                 temperature=0.7,
@@ -245,11 +251,14 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
 
             # 编码 prompt
             input_ids = tokenizer.encode(prompt, return_tensors='pt').to(model.device)
+            attention_mask = torch.ones_like(input_ids)
             st.session_state.prompt_length = input_ids.shape[1]
             st.session_state.generation_input_ids = input_ids
+            st.session_state.attention_mask = attention_mask
         else:
             # 继续之前的生成，使用累积的 input_ids
             input_ids = st.session_state.generation_input_ids
+            attention_mask = st.session_state.attention_mask
 
         # 计算剩余需要生成的 token 数
         remaining = max_new_tokens - st.session_state.current_position
@@ -267,6 +276,7 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         with torch.no_grad():
             output = model.generate(
                 input_ids,
+                attention_mask=attention_mask,
                 max_new_tokens=current_batch_size,
                 do_sample=True,
                 temperature=0.7,
@@ -336,6 +346,8 @@ def reset_simulation():
     st.session_state.generation_complete = False
     st.session_state.streaming_pending = False
     st.session_state.generated_text = ''
+    st.session_state.generation_input_ids = None
+    st.session_state.attention_mask = None
     if st.session_state.simulator:
         st.session_state.simulator.reset()
     if st.session_state.extractor:
