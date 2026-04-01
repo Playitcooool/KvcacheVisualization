@@ -26,23 +26,27 @@ class KVCacheExtractor:
         num_layers: int = 12,
         num_heads: int = 12,
         head_dim: int = 64,
-        max_seq_len: int = 512
+        max_seq_len: int = 512,
+        debug: bool = False
     ):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.max_seq_len = max_seq_len
+        self.debug = debug
 
         self.kvcache_history: List[KVCacheEntry] = []
         self.current_position = 0
 
         # Hook handles，用于移除 hook
         self._handles: List[Any] = []
+        self._debug_info: List[str] = []
 
     def clear_history(self):
         """清空历史记录"""
         self.kvcache_history = []
         self.current_position = 0
+        self._debug_info = []
 
     def _hook_fn(self, module, input, output):
         """
@@ -53,6 +57,9 @@ class KVCacheExtractor:
         past_key_value 是一个 tuple of (k, v) tensors
         """
         try:
+            if self.debug:
+                self._debug_info.append(f"Output type: {type(output)}, len: {len(output) if isinstance(output, tuple) else 'N/A'}")
+
             # 尝试多种输出格式
 
             # 格式1: (k, v) tuple (常见于 GPT-2 等)
@@ -61,17 +68,28 @@ class KVCacheExtractor:
 
                 # 检查是否是 (batch, seq, hidden) 格式
                 if isinstance(k_output, torch.Tensor) and k_output.dim() >= 2:
+                    if self.debug:
+                        self._debug_info.append(f"Format 1: k={k_output.shape}, v={v_output.shape if isinstance(v_output, torch.Tensor) else 'N/A'}")
                     self._capture_kv(k_output, v_output)
+                    return
 
             # 格式2: past_key_value 格式 (常见于 Llama 等)
-            elif isinstance(output, tuple) and hasattr(output[2], '__len__'):
-                # output[2] 是 past_key_value
-                past_kv = output[2]
-                if isinstance(past_kv, tuple) and len(past_kv) >= 2:
-                    k_cache, v_cache = past_kv[0], past_kv[1]
-                    self._capture_kv(k_cache, v_cache)
+            # output = (attn_output, None, past_key_value) 或
+            # output = (attn_output, past_key_value)
+            if isinstance(output, tuple):
+                for i, item in enumerate(output):
+                    if isinstance(item, tuple) and len(item) == 2:
+                        # 这看起来像 (k, v)
+                        k_cache, v_cache = item[0], item[1]
+                        if isinstance(k_cache, torch.Tensor) and isinstance(v_cache, torch.Tensor):
+                            if self.debug:
+                                self._debug_info.append(f"Format 2: k={k_cache.shape}, v={v_cache.shape}")
+                            self._capture_kv(k_cache, v_cache)
+                            return
 
         except Exception as e:
+            if self.debug:
+                self._debug_info.append(f"Hook error: {e}")
             # Hook 捕获失败不影响前向传播
             pass
 
@@ -115,10 +133,19 @@ class KVCacheExtractor:
         """
         self._handles = []
 
+        # 尝试多种 attention 层命名模式
+        patterns = [
+            'attn', 'attention', 'qkv_proj', 'self_attn',
+            'h.', 'layer.',  # 常见 transformer 层前缀
+        ]
+
         # HuggingFace 模型结构遍历
         for name, module in model.named_modules():
             # 匹配 attention 相关的层
-            if any(pattern in name.lower() for pattern in ['attn', 'attention', 'qkv_proj']):
+            if any(pattern in name.lower() for pattern in patterns):
+                # 跳过非 nn.Module 的东西
+                if not isinstance(module, torch.nn.Module):
+                    continue
                 handle = module.register_forward_hook(self._hook_fn)
                 self._handles.append(handle)
 
@@ -183,3 +210,16 @@ class KVCacheExtractor:
             'device': str(self.kvcache_history[0].k_cache.device),
             'dtype': str(self.kvcache_history[0].k_cache.dtype),
         }
+
+    def get_debug_info(self) -> List[str]:
+        """获取调试信息"""
+        return self._debug_info
+
+    @staticmethod
+    def print_model_attn_modules(model: torch.nn.Module) -> List[str]:
+        """打印模型中所有可能的 attention 模块名称（用于调试）"""
+        attn_modules = []
+        for name, module in model.named_modules():
+            if any(p in name.lower() for p in ['attn', 'attention', 'qkv', 'self_attn', 'h.', 'layer.', 'blocks']):
+                attn_modules.append(f"{name}: {module.__class__.__name__}")
+        return attn_modules

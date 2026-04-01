@@ -663,6 +663,17 @@ else:
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
+                    # 调试信息
+                    if k_cache.abs().sum() < 1e-6:
+                        st.warning("⚠️ KV Cache 数据显示为空（可能是因为 Hook 未捕获到数据）")
+                        with st.expander("调试信息"):
+                            st.code(f"k_cache shape: {k_cache.shape}")
+                            st.code(f"k_cache sum: {k_cache.abs().sum()}")
+                            if st.session_state.extractor:
+                                debug_info = st.session_state.extractor.get_debug_info()
+                                if debug_info:
+                                    st.text("Hook 捕获记录:\n" + "\n".join(debug_info[-10:]))
+
             with tab2:
                 fig = st.session_state.visualizer.create_sequence_view(
                     st.session_state.tokens[:st.session_state.current_position],
