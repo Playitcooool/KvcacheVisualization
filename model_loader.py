@@ -33,7 +33,8 @@ class ModelLoader(ABC):
         """工厂方法创建 loader"""
         if loader_type == "huggingface":
             return HuggingFaceLoader(
-                model_name=kwargs.get("model_name", "gpt2")
+                model_name=kwargs.get("model_name", "gpt2"),
+                quantization=kwargs.get("quantization", None)
             )
         elif loader_type == "pytorch":
             return PyTorchLoader(
@@ -43,16 +44,48 @@ class ModelLoader(ABC):
             raise ValueError(f"Unknown loader type: {loader_type}")
 
 
-class HuggingFaceLoader(ModelLoader):
-    """HuggingFace 模型加载器"""
+def check_quantization_available():
+    """检查可用的量化库"""
+    libs = {
+        'bitsandbytes': False,
+        'auto_gptq': False,
+        'awq': False,
+    }
 
-    def __init__(self, model_name: str = "gpt2", device: Union[str, torch.device] = "auto"):
+    try:
+        import bitsandbytes
+        libs['bitsandbytes'] = True
+    except ImportError:
+        pass
+
+    try:
+        import auto_gptq
+        libs['auto_gptq'] = True
+    except ImportError:
+        pass
+
+    try:
+        import awq
+        libs['awq'] = True
+    except ImportError:
+        pass
+
+    return libs
+
+
+class HuggingFaceLoader(ModelLoader):
+    """HuggingFace 模型加载器，支持量化"""
+
+    def __init__(self, model_name: str = "gpt2", device: Union[str, torch.device] = "auto",
+                 quantization: str = None):
         self.model_name = model_name
         self.device = get_device_from_string(device)
         self.loader_type = "huggingface"
+        self.quantization = quantization  # None, "4bit", "8bit", "gptq", "awq"
         self._model = None
         self._tokenizer = None
         self._config = None
+        self._quantization_info = None
 
     def get_config(self) -> Dict[str, Any]:
         """获取模型配置（不加载模型）"""
@@ -70,35 +103,115 @@ class HuggingFaceLoader(ModelLoader):
             'vocab_size': getattr(config, 'vocab_size', 50257),
             'max_position_embeddings': getattr(config, 'n_positions', getattr(config, 'max_position_embeddings', 1024)),
             'head_dim': getattr(config, 'n_embd', 768) // getattr(config, 'n_head', 12),
+            'quantization': self.quantization,
         }
         return self._config
 
     def load(self, device: Union[str, torch.device] = "auto") -> Tuple[Any, Any, Dict]:
-        """加载 HuggingFace 模型和 tokenizer"""
+        """加载 HuggingFace 模型和 tokenizer，支持量化"""
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         # 解析设备
         target_device = get_device_from_string(device) if device != "auto" else self.device
+        if target_device.type == 'cuda':
+            target_device = torch.device("cuda:0")
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
-        # 加载模型到指定设备
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            torch_dtype=torch.float32,
-        )
+        # 量化加载
+        if self.quantization:
+            self._model = self._load_quantized_model(target_device)
+        else:
+            # 普通加载
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.float32,
+            )
+            self._model = self._model.to(target_device)
 
-        # 手动移动到目标设备（更可靠）
-        self._model = self._model.to(target_device)
         self._model.eval()
-
-        # 更新设备引用
         self.device = target_device
 
         config = self.get_config()
         return self._model, self._tokenizer, config
+
+    def _load_quantized_model(self, device: torch.device) -> Any:
+        """加载量化模型"""
+        from transformers import AutoModelForCausalLM, AutoConfig
+
+        quant_libs = check_quantization_available()
+
+        # 4-bit/8-bit 量化 (bitsandbytes)
+        if self.quantization in ("4bit", "8bit"):
+            if not quant_libs['bitsandbytes']:
+                raise ImportError(
+                    "bitsandbytes 未安装。请运行: uv pip install bitsandbytes\n"
+                    "或选择其他量化方式"
+                )
+
+            import bitsandbytes as bnb
+
+            if self.quantization == "4bit":
+                load_in_4bit = True
+                load_in_8bit = False
+                quant_desc = "4-bit"
+            else:
+                load_in_4bit = False
+                load_in_8bit = True
+                quant_desc = "8-bit"
+
+            self._quantization_info = f"{quant_desc}量化 (bitsandbytes)"
+
+            model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                load_in_4bit=load_in_4bit,
+                load_in_8bit=load_in_8bit,
+                device_map="auto",
+            )
+            return model
+
+        # GPTQ 量化
+        elif self.quantization == "gptq":
+            if not quant_libs['auto_gptq']:
+                raise ImportError(
+                    "auto-gptq 未安装。请运行: uv pip install auto-gptq\n"
+                    "或选择其他量化方式"
+                )
+
+            from auto_gptq import AutoGPTQForCausalLM
+
+            self._quantization_info = "GPTQ 量化"
+
+            model = AutoGPTQForCausalLM.from_quantized(
+                self.model_name,
+                device_map="auto",
+                use_safetensors=True,
+            )
+            return model
+
+        # AWQ 量化
+        elif self.quantization == "awq":
+            if not quant_libs['awq']:
+                raise ImportError(
+                    "awq 未安装。请运行: uv pip install awq\n"
+                    "或选择其他量化方式"
+                )
+
+            from awq import AutoAWQForCausalLM
+
+            self._quantization_info = "AWQ 量化"
+
+            model = AutoAWQForCausalLM.from_quantized(
+                self.model_name,
+                device_map="auto",
+                use_safetensors=True,
+            )
+            return model
+
+        else:
+            raise ValueError(f"不支持的量化方式: {self.quantization}")
 
     @property
     def model(self):
@@ -116,7 +229,10 @@ class HuggingFaceLoader(ModelLoader):
     def current_device(self) -> torch.device:
         """获取模型当前所在设备"""
         if self._model is not None:
-            return next(self._model.parameters()).device
+            try:
+                return next(self._model.parameters()).device
+            except StopIteration:
+                return self.device
         return self.device
 
 

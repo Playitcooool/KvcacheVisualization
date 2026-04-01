@@ -72,11 +72,11 @@ def init_session_state():
             st.session_state[key] = value
 
 
-def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str = "", device: str = "auto"):
+def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str = "", device: str = "auto", quantization: str = None):
     """加载模型"""
     try:
         if model_type == "huggingface":
-            loader = ModelLoader.create("huggingface", model_name=model_name)
+            loader = ModelLoader.create("huggingface", model_name=model_name, quantization=quantization)
             model, tokenizer, config = loader.load(device=device)
         else:
             loader = ModelLoader.create("pytorch", checkpoint_path=checkpoint_path)
@@ -223,6 +223,8 @@ with st.sidebar:
         help="选择 HuggingFace 在线模型或本地模型"
     )
 
+    quantization = None
+
     if model_source == "🤖 HuggingFace":
         # HuggingFace 模型选择
         st.markdown("**选择模型:**")
@@ -231,10 +233,25 @@ with st.sidebar:
             "gpt2-medium (中)": "gpt2-medium",
             "TinyLlama (小)": "TinyLlama/TinyLlama-1.1B-v0.1",
             "Qwen2-0.5B (小)": "Qwen/Qwen2-0.5B",
+            "Qwen2-1.5B (中)": "Qwen/Qwen2-1.5B",
         }
         selected_preset = st.selectbox("预设模型", list(preset_models.keys()), label_visibility="collapsed")
         model_name = preset_models[selected_preset]
         st.caption(f"模型名: `{model_name}`")
+
+        # 量化选项
+        st.markdown("**量化方式 (可选):**")
+        quant_options = {
+            "不使用量化 (推荐显存充足时)": None,
+            "4-bit 量化 (bitsandbytes)": "4bit",
+            "8-bit 量化 (bitsandbytes)": "8bit",
+        }
+        quant_selection = st.selectbox("量化", list(quant_options.keys()), label_visibility="collapsed")
+        quantization = quant_options[quant_selection]
+
+        if quantization:
+            st.info(f"使用 {quantization} 量化，节省显存")
+
         checkpoint_path = ""
     else:
         # 本地模型
@@ -275,12 +292,12 @@ with st.sidebar:
     if st.button("🚀 加载模型", type="primary", disabled=not can_load):
         with st.spinner("加载中，请稍候..."):
             if model_source == "🤖 HuggingFace":
-                success, msg = load_model("huggingface", model_name=model_name, device=selected_device)
+                success, msg = load_model("huggingface", model_name=model_name, device=selected_device, quantization=quantization)
             else:
                 if os.path.isdir(local_path):
-                    success, msg = load_model("huggingface", model_name=local_path, device=selected_device)
+                    success, msg = load_model("huggingface", model_name=local_path, device=selected_device, quantization=quantization)
                 else:
-                    success, msg = load_model("pytorch", checkpoint_path=checkpoint_path, device=selected_device)
+                    success, msg = load_model("pytorch", checkpoint_path=checkpoint_path, device=selected_device, quantization=quantization)
         if success:
             st.success(msg)
             st.rerun()
@@ -295,6 +312,8 @@ with st.sidebar:
         st.markdown(f"- 📊 层数: `{config.get('num_layers', 'N/A')}`")
         st.markdown(f"- 🔢 头数: `{config.get('num_heads', 'N/A')}`")
         st.markdown(f"- 📐 隐藏维度: `{config.get('hidden_size', 'N/A')}`")
+        if config.get('quantization'):
+            st.markdown(f"- 🔢 量化: `{config.get('quantization')}`")
         st.markdown(f"- 💻 设备: `{st.session_state.model_loader.current_device if st.session_state.model_loader else 'N/A'}`")
 
     st.markdown("---")
