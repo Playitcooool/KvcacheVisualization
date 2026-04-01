@@ -3,6 +3,9 @@ import torch
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
+# 最大历史长度限制，防止内存溢出
+MAX_HISTORY_LENGTH = 100
+
 @dataclass
 class KVCacheEntry:
     """KV Cache 历史条目"""

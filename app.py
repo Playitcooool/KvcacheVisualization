@@ -78,6 +78,10 @@ def init_session_state():
         'is_generating': False,
         'model_loaded': False,
         'model_config': {},
+        'streaming_pending': False,
+        'streaming_prompt': '',
+        'streaming_max_tokens': 50,
+        'streaming_batch_size': 5,
     }
 
     for key, value in defaults.items():
@@ -194,6 +198,119 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
         st.error(f"生成失败: {str(e)}")
     finally:
         st.session_state.is_generating = False
+        # GPU 内存清理
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: int = 5):
+    """流式生成 token，按批次更新 UI
+
+    Args:
+        prompt: 输入提示词
+        max_new_tokens: 最大生成 token 数
+        batch_size: 每批生成的 token 数
+    """
+    # 导入 MAX_HISTORY_LENGTH
+    from kvcache_simulator import MAX_HISTORY_LENGTH
+
+    if st.session_state.generation_complete or st.session_state.is_generating:
+        return
+
+    st.session_state.is_generating = True
+
+    try:
+        model = st.session_state.model
+        tokenizer = st.session_state.tokenizer
+        extractor = st.session_state.extractor
+        simulator = st.session_state.simulator
+
+        # 如果是新的生成，清空之前的历史
+        if not st.session_state.tokens:
+            extractor.clear_history()
+            simulator.reset()
+            st.session_state.tokens = []
+            st.session_state.token_ids = []
+            st.session_state.current_position = 0
+
+            # 编码 prompt
+            input_ids = tokenizer.encode(prompt, return_tensors='pt').to(model.device)
+            st.session_state.prompt_length = input_ids.shape[1]
+            st.session_state.generation_input_ids = input_ids
+        else:
+            # 继续之前的生成，使用累积的 input_ids
+            input_ids = st.session_state.generation_input_ids
+
+        # 计算剩余需要生成的 token 数
+        remaining = max_new_tokens - st.session_state.current_position
+        if remaining <= 0:
+            st.session_state.generation_complete = True
+            return
+
+        # 确定本批生成的数量
+        current_batch_size = min(batch_size, remaining)
+
+        # 注册 hooks
+        handles = extractor.register_hooks(model)
+
+        # 生成一批 token
+        with torch.no_grad():
+            output = model.generate(
+                input_ids,
+                max_new_tokens=current_batch_size,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id
+            )
+
+        # 移除 hooks
+        for handle in handles:
+            handle.remove()
+
+        # 解码新生成的 token（从上次结束位置开始）
+        start_pos = st.session_state.prompt_length + st.session_state.current_position
+        new_ids = output[0][start_pos:start_pos + current_batch_size]
+        new_tokens = tokenizer.convert_ids_to_tokens(new_ids)
+
+        # 更新 extractor 和 simulator（仅新 token）
+        for i, (token_id, token_str) in enumerate(zip(new_ids.tolist(), new_tokens)):
+            pos = st.session_state.current_position + i + 1
+
+            # 检查历史长度限制
+            if len(simulator.history) >= MAX_HISTORY_LENGTH:
+                break
+
+            if pos <= len(extractor.kvcache_history):
+                entry = extractor.kvcache_history[pos - 1]
+                simulator.add_entry(pos, entry.k_cache, entry.v_cache, token_id, token_str)
+            else:
+                k = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
+                v = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
+                simulator.add_entry(pos, k, v, token_id, token_str)
+
+        # 更新 session state
+        st.session_state.token_ids.extend(new_ids.tolist())
+        st.session_state.tokens.extend(new_tokens)
+        st.session_state.current_position += len(new_tokens)
+
+        # 更新累积的 input_ids 用于下次生成
+        st.session_state.generation_input_ids = output
+
+        # 检查是否完成
+        if st.session_state.current_position >= max_new_tokens:
+            st.session_state.generation_complete = True
+            st.session_state.streaming_pending = False
+        else:
+            # 还有更多 token 需要生成，重置 hooks 以便下次继续
+            st.session_state.is_generating = False
+
+    except Exception as e:
+        st.error(f"流式生成失败: {str(e)}")
+        st.session_state.is_generating = False
+    finally:
+        # GPU 内存清理
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def reset_simulation():
@@ -202,6 +319,7 @@ def reset_simulation():
     st.session_state.token_ids = []
     st.session_state.current_position = 0
     st.session_state.generation_complete = False
+    st.session_state.streaming_pending = False
     if st.session_state.simulator:
         st.session_state.simulator.reset()
     if st.session_state.extractor:
@@ -210,6 +328,18 @@ def reset_simulation():
 
 # 初始化
 init_session_state()
+
+# 流式生成自动继续检查
+# 如果有待处理的流式生成任务，继续执行
+if (st.session_state.get('streaming_pending', False) and
+    st.session_state.model_loaded and
+    not st.session_state.generation_complete):
+    run_generation_streaming(
+        st.session_state.streaming_prompt,
+        max_new_tokens=st.session_state.streaming_max_tokens,
+        batch_size=st.session_state.streaming_batch_size
+    )
+    st.rerun()
 
 # 主界面
 st.markdown('<h1 class="main-header">KV Cache 可视化器</h1>', unsafe_allow_html=True)
@@ -382,11 +512,31 @@ else:
         # 批量大小
         batch_size = st.slider("生成 Token 数", 5, 50, 20)
 
+        # 流式生成模式
+        streaming_mode = st.checkbox("流式生成模式", value=False, help="启用后分批生成 token，每批后更新可视化")
+
+        # 流式生成批次大小
+        stream_batch_size = 5
+        if streaming_mode:
+            stream_batch_size = st.slider("流式批次大小", 1, 10, 5, help="每批生成的 token 数")
+
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if not st.session_state.generation_complete:
                 if st.button("▶ 开始生成" if not st.session_state.is_generating else "⏳ 生成中..."):
-                    run_generation_step(prompt, max_new_tokens=batch_size)
+                    if streaming_mode:
+                        # 设置流式生成状态
+                        st.session_state.streaming_pending = True
+                        st.session_state.streaming_prompt = prompt
+                        st.session_state.streaming_max_tokens = batch_size
+                        st.session_state.streaming_batch_size = stream_batch_size
+                        st.session_state.is_generating = True
+                        run_generation_streaming(prompt, max_new_tokens=batch_size, batch_size=stream_batch_size)
+                        # 如果未完成，下次 rerun 时继续
+                        if not st.session_state.generation_complete:
+                            st.rerun()
+                    else:
+                        run_generation_step(prompt, max_new_tokens=batch_size)
                     st.rerun()
             else:
                 st.success("✓ 生成完成")
