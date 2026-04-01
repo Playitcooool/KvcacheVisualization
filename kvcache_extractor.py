@@ -18,19 +18,22 @@ class KVCacheExtractor:
     """
     KV Cache 提取器
 
-    使用 PyTorch Hook 在模型 Forward 过程中捕获 Attention 层的 K/V tensor
+    通过拦截模型的 forward pass 捕获 Attention 层的 K/V tensor
+    支持 GQA (Grouped Query Attention) - Qwen, LLaMA 等模型使用
     """
 
     def __init__(
         self,
         num_layers: int = 12,
         num_heads: int = 12,
+        num_kv_heads: int = None,
         head_dim: int = 64,
         max_seq_len: int = 512,
         debug: bool = False
     ):
         self.num_layers = num_layers
-        self.num_heads = num_heads
+        self.num_heads = num_heads  # Query heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads else num_heads  # KV heads (for GQA)
         self.head_dim = head_dim
         self.max_seq_len = max_seq_len
         self.debug = debug
@@ -48,82 +51,35 @@ class KVCacheExtractor:
         self.current_position = 0
         self._debug_info = []
 
-    def _hook_fn(self, module, input, output):
-        """
-        Forward hook 函数
-
-        捕获 attention 层的 k, v 输出
-        对于 HuggingFace 模型，attention 输出通常是 (attn_output, None, past_key_value)
-        past_key_value 是一个 tuple of (k, v) tensors
-        """
-        try:
-            if self.debug:
-                self._debug_info.append(f"Output type: {type(output)}, len: {len(output) if isinstance(output, tuple) else 'N/A'}")
-
-            # 尝试多种输出格式
-
-            # 格式1: (k, v) tuple (常见于 GPT-2 等)
-            if isinstance(output, tuple) and len(output) >= 2:
-                k_output, v_output = output[0], output[1]
-
-                # 检查是否是 (batch, seq, hidden) 格式
-                if isinstance(k_output, torch.Tensor) and k_output.dim() >= 2:
-                    if self.debug:
-                        self._debug_info.append(f"Format 1: k={k_output.shape}, v={v_output.shape if isinstance(v_output, torch.Tensor) else 'N/A'}")
-                    self._capture_kv(k_output, v_output)
-                    return
-
-            # 格式2: past_key_value 格式 (常见于 Llama 等)
-            # output = (attn_output, None, past_key_value) 或
-            # output = (attn_output, past_key_value)
-            if isinstance(output, tuple):
-                for i, item in enumerate(output):
-                    if isinstance(item, tuple) and len(item) == 2:
-                        # 这看起来像 (k, v)
-                        k_cache, v_cache = item[0], item[1]
-                        if isinstance(k_cache, torch.Tensor) and isinstance(v_cache, torch.Tensor):
-                            if self.debug:
-                                self._debug_info.append(f"Format 2: k={k_cache.shape}, v={v_cache.shape}")
-                            self._capture_kv(k_cache, v_cache)
-                            return
-
-        except Exception as e:
-            if self.debug:
-                self._debug_info.append(f"Hook error: {e}")
-            # Hook 捕获失败不影响前向传播
-            pass
-
-    def _capture_kv(self, k: torch.Tensor, v: torch.Tensor):
+    def _capture_kv(self, k: torch.Tensor, v: torch.Tensor, position: int):
         """捕获 K/V tensor"""
         if k is None or v is None:
             return
 
-        # 确保是 4D tensor: (batch, head, seq, dim) 或 (batch, seq, head, dim)
-        # HuggingFace 通常是 (batch, seq, head, dim)，需要转置
-
+        # 如果是 3D tensor (batch, seq, hidden_kv)，需要转换
+        # GQA: hidden_kv = num_kv_heads * head_dim
         if k.dim() == 3:
-            # (batch, seq, hidden) -> (batch, head, seq, head_dim)
-            batch, seq_len, hidden = k.shape
-            k = k.view(batch, seq_len, self.num_heads, self.head_dim)
-            v = v.view(batch, seq_len, self.num_heads, self.head_dim)
+            batch, seq_len, hidden_kv = k.shape
+            k = k.view(batch, seq_len, self.num_kv_heads, self.head_dim)
+            v = v.view(batch, seq_len, self.num_kv_heads, self.head_dim)
 
-        if k.dim() == 4 and k.shape[1] != self.num_heads:
-            # (batch, seq, head, dim) -> (batch, head, seq, dim)
+        # 转换为 (batch, head, seq, dim)
+        if k.dim() == 4 and k.shape[1] != self.num_kv_heads:
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)
 
         # 克隆以防原始 tensor 被修改
         self.kvcache_history.append(KVCacheEntry(
-            position=self.current_position,
+            position=position,
             k_cache=k.clone(),
             v_cache=v.clone(),
-            token_id=-1,  # 未知
+            token_id=-1,
             token_str=""
         ))
 
     def register_hooks(self, model: torch.nn.Module) -> List[Any]:
         """
-        注册 hooks 到模型的所有 attention 层
+        注册 hooks 到模型的 attention 层
 
         Args:
             model: PyTorch 模型
@@ -133,71 +89,44 @@ class KVCacheExtractor:
         """
         self._handles = []
 
-        # 尝试多种 attention 层命名模式
-        patterns = [
-            'attn', 'attention', 'qkv_proj', 'self_attn',
-            'h.', 'layer.',  # 常见 transformer 层前缀
-        ]
-
-        # HuggingFace 模型结构遍历
+        # 遍历模型找到 k_proj 和 v_proj (GQA 架构)
         for name, module in model.named_modules():
-            # 匹配 attention 相关的层
-            if any(pattern in name.lower() for pattern in patterns):
-                # 跳过非 nn.Module 的东西
-                if not isinstance(module, torch.nn.Module):
-                    continue
-                handle = module.register_forward_hook(self._hook_fn)
+            if not isinstance(module, torch.nn.Linear):
+                continue
+
+            # Hook k_proj 和 v_proj
+            if 'k_proj' in name.lower():
+                handle = module.register_forward_hook(self._create_k_hook(name))
+                self._handles.append(handle)
+
+            elif 'v_proj' in name.lower():
+                handle = module.register_forward_hook(self._create_v_hook(name))
                 self._handles.append(handle)
 
         return self._handles
 
-    def remove_hooks(self):
-        """移除所有已注册的 hooks"""
-        for handle in self._handles:
-            handle.remove()
-        self._handles = []
+    def _create_k_hook(self, name: str):
+        """创建 k_proj 的 hook"""
+        def hook_fn(module, input, output):
+            if self.debug:
+                self._debug_info.append(f"k_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+            if isinstance(output, torch.Tensor):
+                self._temp_k = output
+        return hook_fn
 
-    def get_state_at_position(self, position: int) -> Optional[KVCacheEntry]:
-        """获取特定位置的 KV Cache 状态"""
-        for entry in self.kvcache_history:
-            if entry.position == position:
-                return entry
-        return None
-
-    def get_full_kvcache(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """获取完整的 KV Cache tensor"""
-        if not self.kvcache_history:
-            return torch.zeros(1), torch.zeros(1)
-
-        k_list = [entry.k_cache for entry in self.kvcache_history]
-        v_list = [entry.v_cache for entry in self.kvcache_history]
-
-        # 沿着 seq 维度拼接
-        k_full = torch.cat(k_list, dim=2)  # (batch, head, total_seq, head_dim)
-        v_full = torch.cat(v_list, dim=2)
-
-        return k_full, v_full
-
-    def update_token_info(self, position: int, token_id: int, token_str: str):
-        """更新指定位置的 token 信息"""
-        for entry in self.kvcache_history:
-            if entry.position == position:
-                entry.token_id = token_id
-                entry.token_str = token_str
-                break
-
-    def detect_model_architecture(self, model) -> str:
-        """检测模型架构类型"""
-        model_name_lower = model.__class__.__name__.lower()
-
-        if "t5" in model_name_lower or "flan" in model_name_lower:
-            return "encoder-decoder"  # T5, FLAN-T5, mT5
-        elif "gpt" in model_name_lower or "llama" in model_name_lower or "qwen" in model_name_lower or "bloom" in model_name_lower:
-            return "causal"  # GPT, LLaMA, Qwen, Bloom
-        elif "opt" in model_name_lower:
-            return "causal"  # OPT is causal
-        else:
-            return "causal"  # 默认
+    def _create_v_hook(self, name: str):
+        """创建 v_proj 的 hook"""
+        def hook_fn(module, input, output):
+            if self.debug:
+                self._debug_info.append(f"v_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+            if isinstance(output, torch.Tensor):
+                self._temp_v = output
+                # 当 v 被捕获时，说明一个 token 的处理完成了
+                if hasattr(self, '_temp_k') and self._temp_k is not None:
+                    self.current_position += 1
+                    self._capture_kv(self._temp_k, self._temp_v, self.current_position)
+                    self._temp_k = None
+        return hook_fn
 
     def get_cache_summary(self) -> Dict[str, Any]:
         """获取 cache 摘要信息"""

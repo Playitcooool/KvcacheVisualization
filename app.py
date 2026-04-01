@@ -116,11 +116,13 @@ def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str =
         # 初始化 extractor 和 simulator
         num_layers = config.get('num_layers', 12)
         num_heads = config.get('num_heads', 12)
+        num_kv_heads = config.get('num_kv_heads', num_heads)
         head_dim = config.get('head_dim', 64)
 
         st.session_state.extractor = KVCacheExtractor(
             num_layers=num_layers,
             num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
             head_dim=head_dim
         )
         st.session_state.simulator = KVCacheSimulator(

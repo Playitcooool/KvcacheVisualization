@@ -129,16 +129,20 @@ class HuggingFaceLoader(ModelLoader):
             num_heads = getattr(config, 'num_heads', 12)
             hidden_size = getattr(config, 'd_model', 768)
             architecture = "encoder-decoder"
+            num_kv_heads = num_heads  # T5 没有 GQA
         else:
-            # GPT/LLaMA 系列
+            # GPT/LLaMA/Qwen 系列 (支持 GQA)
             num_layers = getattr(config, 'n_layer', getattr(config, 'num_layers', 12))
             num_heads = getattr(config, 'n_head', getattr(config, 'num_heads', 12))
+            # GQA: num_key_value_heads 可能不同于 num_heads
+            num_kv_heads = getattr(config, 'num_key_value_heads', num_heads)
             hidden_size = getattr(config, 'n_embd', getattr(config, 'hidden_size', 768))
             architecture = "causal"
 
         self._config = {
             'num_layers': num_layers,
             'num_heads': num_heads,
+            'num_kv_heads': num_kv_heads,
             'hidden_size': hidden_size,
             'vocab_size': getattr(config, 'vocab_size', 50257),
             'max_position_embeddings': getattr(config, 'n_positions', getattr(config, 'max_position_embeddings', 1024)),
