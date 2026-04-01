@@ -19,7 +19,11 @@ class KVCacheExtractor:
     KV Cache 提取器
 
     通过拦截模型的 forward pass 捕获 Attention 层的 K/V tensor
-    支持 GQA (Grouped Query Attention) - Qwen, LLaMA 等模型使用
+    支持多种模型架构：
+    - GPT-2: c_attn (QKV 合并)
+    - LLaMA/Qwen/Mistral: q_proj, k_proj, v_proj (GQA 支持)
+    - T5: q, k, v, o (Encoder-Decoder)
+    - Bloom: 类似 GPT-2
     """
 
     def __init__(
@@ -44,6 +48,7 @@ class KVCacheExtractor:
         # Hook handles，用于移除 hook
         self._handles: List[Any] = []
         self._debug_info: List[str] = []
+        self._attention_type = None  # 'gpt2', 'gqa', 't5'
 
     def clear_history(self):
         """清空历史记录"""
@@ -57,7 +62,6 @@ class KVCacheExtractor:
             return
 
         # 如果是 3D tensor (batch, seq, hidden_kv)，需要转换
-        # GQA: hidden_kv = num_kv_heads * head_dim
         if k.dim() == 3:
             batch, seq_len, hidden_kv = k.shape
             k = k.view(batch, seq_len, self.num_kv_heads, self.head_dim)
@@ -77,6 +81,34 @@ class KVCacheExtractor:
             token_str=""
         ))
 
+    def _detect_attention_type(self, model: torch.nn.Module):
+        """检测模型的 attention 类型"""
+        # 检查模块名称模式
+        has_qkv = False
+        has_separate_qkv = False
+        has_c_attn = False
+
+        for name, module in model.named_modules():
+            name_lower = name.lower()
+
+            # GPT-2 style: transformer.h.0.attn.c_attn
+            if 'c_attn' in name_lower or 'qkv_proj' in name_lower:
+                has_c_attn = True
+
+            # LLaMA/Qwen style: model.layers.0.self_attn.q_proj
+            if '.q_proj' in name_lower or '.k_proj' in name_lower:
+                has_separate_qkv = True
+
+        if has_c_attn:
+            self._attention_type = 'gpt2'
+        elif has_separate_qkv:
+            self._attention_type = 'gqa'
+        else:
+            self._attention_type = 'gqa'  # 默认
+
+        if self.debug:
+            self._debug_info.append(f"Detected attention type: {self._attention_type}")
+
     def register_hooks(self, model: torch.nn.Module) -> List[Any]:
         """
         注册 hooks 到模型的 attention 层
@@ -88,13 +120,63 @@ class KVCacheExtractor:
             hook handles 列表，用于之后移除 hook
         """
         self._handles = []
+        self._detect_attention_type(model)
 
-        # 遍历模型找到 k_proj 和 v_proj (GQA 架构)
+        if self._attention_type == 'gpt2':
+            self._register_gpt2_hooks(model)
+        else:
+            self._register_gqa_hooks(model)
+
+        return self._handles
+
+    def _register_gpt2_hooks(self, model: torch.nn.Module):
+        """为 GPT-2 风格模型注册 hooks (c_attn)"""
+        for name, module in model.named_modules():
+            if 'c_attn' in name.lower():
+                # GPT-2 的 c_attn 输出是 (batch, seq, hidden*3)，包含 QKV
+                handle = module.register_forward_hook(self._create_c_attn_hook(name))
+                self._handles.append(handle)
+                if self.debug:
+                    self._debug_info.append(f"Registered c_attn hook on: {name}")
+
+    def _create_c_attn_hook(self, name: str):
+        """创建 GPT-2 c_attn 的 hook"""
+        def hook_fn(module, input, output):
+            if self.debug:
+                self._debug_info.append(f"c_attn {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+            if isinstance(output, torch.Tensor) and output.dim() == 3:
+                # output: (batch, seq, hidden*3)
+                batch, seq_len, hidden3 = output.shape
+                hidden = hidden3 // 3
+                q = output[:, :, 0:hidden]
+                k = output[:, :, hidden:hidden*2]
+                v = output[:, :, hidden*2:hidden*3]
+
+                # 更新 position
+                self.current_position += seq_len
+
+                # GPT-2 不使用 GQA，所以 num_kv_heads = num_heads
+                q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+                k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+                v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+                # 为每个 token 位置创建 entry
+                for pos in range(seq_len):
+                    self.kvcache_history.append(KVCacheEntry(
+                        position=self.current_position - seq_len + pos + 1,
+                        k_cache=k[:, :, pos:pos+1, :].clone(),
+                        v_cache=v[:, :, pos:pos+1, :].clone(),
+                        token_id=-1,
+                        token_str=""
+                    ))
+        return hook_fn
+
+    def _register_gqa_hooks(self, model: torch.nn.Module):
+        """为 GQA 风格模型注册 hooks (q_proj, k_proj, v_proj)"""
         for name, module in model.named_modules():
             if not isinstance(module, torch.nn.Linear):
                 continue
 
-            # Hook k_proj 和 v_proj
             if 'k_proj' in name.lower():
                 handle = module.register_forward_hook(self._create_k_hook(name))
                 self._handles.append(handle)
@@ -102,8 +184,6 @@ class KVCacheExtractor:
             elif 'v_proj' in name.lower():
                 handle = module.register_forward_hook(self._create_v_hook(name))
                 self._handles.append(handle)
-
-        return self._handles
 
     def _create_k_hook(self, name: str):
         """创建 k_proj 的 hook"""
@@ -136,6 +216,7 @@ class KVCacheExtractor:
         return {
             'num_entries': len(self.kvcache_history),
             'total_positions': self.current_position,
+            'attention_type': self._attention_type,
             'device': str(self.kvcache_history[0].k_cache.device),
             'dtype': str(self.kvcache_history[0].k_cache.dtype),
         }
