@@ -212,7 +212,10 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
         st.session_state.generation_complete = True
 
     except Exception as e:
+        import traceback
         st.error(f"生成失败: {str(e)}")
+        with st.expander("详细错误信息"):
+            st.text(traceback.format_exc())
     finally:
         st.session_state.is_generating = False
         # GPU 内存清理
@@ -330,7 +333,10 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
             st.session_state.is_generating = False
 
     except Exception as e:
+        import traceback
         st.error(f"流式生成失败: {str(e)}")
+        with st.expander("详细错误信息"):
+            st.text(traceback.format_exc())
         st.session_state.is_generating = False
     finally:
         # GPU 内存清理
