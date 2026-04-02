@@ -304,3 +304,200 @@ class KVCacheVisualizer:
             yaxis_title="Layer",
         )
         return fig
+
+    def create_attention_heatmap(
+        self,
+        attn_weights: torch.Tensor,
+        tokens: List[str] = None,
+        title: str = "Attention Pattern"
+    ) -> go.Figure:
+        """
+        创建 Attention Pattern 热力图。
+
+        Args:
+            attn_weights: Attention weights tensor [batch, heads, seq, seq]
+            tokens: 可选的 token 列表用于 x/y 轴标签
+            title: 图表标题
+
+        Returns:
+            Plotly Figure
+        """
+        if attn_weights is None:
+            return go.Figure()
+
+        attn_np = self._tensor_to_numpy(attn_weights)
+
+        # attn_np shape: [batch, heads, seq, seq] -> 取 batch=0, 平均所有 heads
+        if attn_np.ndim == 4:
+            # 平均所有 heads
+            attn_avg = np.mean(attn_np, axis=1)  # [seq, seq]
+        else:
+            attn_avg = attn_np
+
+        # 如果有 tokens，用 tokens 作为标签
+        if tokens and len(tokens) == attn_avg.shape[0]:
+            x_labels = tokens
+            y_labels = tokens
+        else:
+            x_labels = [f"T{i+1}" for i in range(attn_avg.shape[0])]
+            y_labels = x_labels
+
+        fig = px.imshow(
+            attn_avg,
+            x=x_labels,
+            y=y_labels,
+            title=title,
+            color_continuous_scale="Blues",
+            aspect="auto"
+        )
+        fig.update_layout(
+            xaxis_title="Key Tokens",
+            yaxis_title="Query Tokens",
+        )
+        return fig
+
+    def create_attention_per_head(
+        self,
+        attn_weights: torch.Tensor,
+        tokens: List[str] = None,
+        title: str = "Attention Pattern per Head"
+    ) -> go.Figure:
+        """
+        创建每个 Head 的 Attention Pattern 子图。
+
+        Args:
+            attn_weights: Attention weights tensor [batch, heads, seq, seq]
+            tokens: 可选的 token 列表
+            title: 图表标题
+
+        Returns:
+            Plotly Figure with subplots for each head
+        """
+        if attn_weights is None:
+            return go.Figure()
+
+        attn_np = self._tensor_to_numpy(attn_weights)
+
+        if attn_np.ndim != 4:
+            return self.create_attention_heatmap(attn_weights, tokens, title)
+
+        batch, num_heads, seq_len, _ = attn_np.shape
+
+        # 限制显示的 heads 数量（最多 12 个）
+        max_heads_to_show = min(num_heads, 12)
+        num_rows = (max_heads_to_show + 3) // 4
+        num_cols = min(4, max_heads_to_show)
+
+        fig = make_subplots(
+            rows=num_rows,
+            cols=num_cols,
+            subplot_titles=[f"Head {i}" for i in range(max_heads_to_show)],
+            horizontal_spacing=0.1,
+            vertical_spacing=0.15
+        )
+
+        x_labels = tokens if tokens else [f"T{i+1}" for i in range(seq_len)]
+        y_labels = x_labels
+
+        for head_idx in range(max_heads_to_show):
+            row = head_idx // num_cols + 1
+            col = head_idx % num_cols + 1
+
+            head_attn = attn_np[0, head_idx, :, :]  # [seq, seq]
+
+            fig.add_trace(
+                go.Heatmap(
+                    z=head_attn,
+                    x=x_labels,
+                    y=y_labels,
+                    colorscale="Blues",
+                    showscale=(head_idx == 0),
+                    colorbar=dict(len=0.4, y=0.8 - (head_idx // 4) * 0.3)
+                ),
+                row=row,
+                col=col
+            )
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            showlegend=False,
+            height=300 * num_rows
+        )
+
+        return fig
+
+    def create_attention_summary(
+        self,
+        attn_weights_list: List[torch.Tensor],
+        tokens: List[str],
+        title: str = "Attention Summary"
+    ) -> go.Figure:
+        """
+        创建 Attention 汇总视图 - 展示多个位置的 attention patterns。
+
+        Args:
+            attn_weights_list: Attention weights 历史列表
+            tokens: token 列表
+            title: 图表标题
+
+        Returns:
+            Plotly Figure
+        """
+        if not attn_weights_list or attn_weights_list[0] is None:
+            return go.Figure()
+
+        # 选择最后几个位置的 attention
+        positions_to_show = min(4, len(attn_weights_list))
+        start_idx = len(attn_weights_list) - positions_to_show
+
+        num_rows = positions_to_show
+        num_cols = 1
+
+        fig = make_subplots(
+            rows=num_rows,
+            cols=num_cols,
+            subplot_titles=[f"Token {start_idx + i + 1}: '{tokens[start_idx + i] if start_idx + i < len(tokens) else '?'}'"
+                          for i in range(positions_to_show)],
+            vertical_spacing=0.2
+        )
+
+        for i, attn in enumerate(attn_weights_list[start_idx:]):
+            if attn is None:
+                continue
+
+            attn_np = self._tensor_to_numpy(attn)
+
+            if attn_np.ndim == 4:
+                attn_avg = np.mean(attn_np, axis=1)  # 平均 heads
+                attn_avg = attn_avg[-1, :] if attn_avg.shape[0] > 1 else attn_avg[0]
+            else:
+                attn_avg = attn_np
+
+            # 限制显示的 token 数量
+            max_tokens = min(len(attn_avg), 20)
+            attn_display = attn_avg[-max_tokens:] if len(attn_avg) > max_tokens else attn_avg
+
+            x_labels = tokens[-max_tokens:] if len(tokens) >= max_tokens else tokens
+
+            fig.add_trace(
+                go.Bar(
+                    x=list(range(len(attn_display))),
+                    y=attn_display,
+                    marker_color='steelblue',
+                    showlegend=False,
+                    text=[f"{v:.2f}" for v in attn_display],
+                    textposition='outside'
+                ),
+                row=i + 1,
+                col=1
+            )
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            showlegend=False,
+            height=200 * num_rows
+        )
+        fig.update_xaxes(title_text="Token Position")
+        fig.update_yaxes(title_text="Attention")
+
+        return fig

@@ -130,8 +130,14 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
     cleaned_tokens = [clean_bpe_token_func(t) for t in st.session_state.tokens[:st.session_state.current_position]]
     visualizer = st.session_state.visualizer
 
-    tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量"]
+    # 提取 attention weights 列表
+    attn_weights_list = []
+    if st.session_state.simulator:
+        for entry in st.session_state.simulator.history:
+            attn_weights_list.append(entry.attn_weights)
+
+    tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+        ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量", "🧠 Attention"]
     )
 
     with tab2:
@@ -183,3 +189,44 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 title="层级能量热力图"
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    with tab7:
+        # Attention Pattern 可视化
+        if attn_weights_list and st.session_state.current_position > 0:
+            current_attn = attn_weights_list[st.session_state.current_position - 1]
+
+            # 选择视图模式
+            attn_view_mode = st.radio(
+                "Attention 视图模式",
+                ["整体视图", "Head 分布", "Summary"],
+                horizontal=True
+            )
+
+            if current_attn is not None:
+                if attn_view_mode == "整体视图":
+                    fig = visualizer.create_attention_heatmap(
+                        current_attn,
+                        cleaned_tokens,
+                        title=f"Attention Pattern (Token {st.session_state.current_position})"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                elif attn_view_mode == "Head 分布":
+                    fig = visualizer.create_attention_per_head(
+                        current_attn,
+                        cleaned_tokens,
+                        title=f"Attention per Head (Token {st.session_state.current_position})"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                else:  # Summary
+                    fig = visualizer.create_attention_summary(
+                        attn_weights_list[:st.session_state.current_position],
+                        cleaned_tokens,
+                        title="Attention Summary"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("当前 token 的 Attention 数据不可用")
+        else:
+            st.info("先生成 token 后才能查看 Attention 可视化")

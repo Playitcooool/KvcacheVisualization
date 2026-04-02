@@ -14,6 +14,7 @@ class KVCacheEntry:
     v_cache: torch.Tensor
     token_id: int
     token_str: str
+    attn_weights: Optional[torch.Tensor] = None  # [batch, heads, seq, seq] attention weights
 
 
 class KVCacheExtractor:
@@ -58,8 +59,8 @@ class KVCacheExtractor:
         self.current_position = 0
         self._debug_info = []
 
-    def _capture_kv(self, k: torch.Tensor, v: torch.Tensor, position: int):
-        """捕获 K/V tensor"""
+    def _capture_kv(self, k: torch.Tensor, v: torch.Tensor, position: int, q: torch.Tensor = None):
+        """捕获 K/V tensor，可选地计算并存储 attention weights"""
         if k is None or v is None:
             return
 
@@ -74,13 +75,21 @@ class KVCacheExtractor:
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)
 
+        # 计算 attention weights if Q is provided
+        attn_weights = None
+        if q is not None:
+            scale = self.head_dim ** 0.5
+            scores = torch.matmul(q, k.transpose(-2, -1)) / scale
+            attn_weights = torch.softmax(scores, dim=-1)
+
         # 克隆以防原始 tensor 被修改
         self.kvcache_history.append(KVCacheEntry(
             position=position,
             k_cache=k.clone(),
             v_cache=v.clone(),
             token_id=-1,
-            token_str=""
+            token_str="",
+            attn_weights=attn_weights.clone() if attn_weights is not None else None
         ))
 
     def _detect_attention_type(self, model: torch.nn.Module):
@@ -165,6 +174,11 @@ class KVCacheExtractor:
                 k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
                 v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
+                # 计算 attention weights: softmax(Q @ K^T / sqrt(d_k))
+                scale = self.head_dim ** 0.5
+                scores = torch.matmul(q, k.transpose(-2, -1)) / scale
+                attn_weights = torch.softmax(scores, dim=-1)
+
                 # 为每个 token 位置创建 entry
                 for pos in range(seq_len):
                     self.kvcache_history.append(KVCacheEntry(
@@ -172,7 +186,8 @@ class KVCacheExtractor:
                         k_cache=k[:, :, pos:pos+1, :].clone(),
                         v_cache=v[:, :, pos:pos+1, :].clone(),
                         token_id=-1,
-                        token_str=""
+                        token_str="",
+                        attn_weights=attn_weights[:, :, pos:pos+1, :].clone()
                     ))
         return hook_fn
 
@@ -189,6 +204,20 @@ class KVCacheExtractor:
             elif 'v_proj' in name.lower():
                 handle = module.register_forward_hook(self._create_v_hook(name))
                 self._handles.append(handle)
+
+            elif 'q_proj' in name.lower():
+                handle = module.register_forward_hook(self._create_q_hook(name))
+                self._handles.append(handle)
+
+    def _create_q_hook(self, name: str):
+        """创建 q_proj 的 hook"""
+        def hook_fn(module, input, output):
+            if self.debug:
+                self._debug_info.append(f"q_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+                logger.debug(f"q_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+            if isinstance(output, torch.Tensor):
+                self._temp_q = output
+        return hook_fn
 
     def _create_k_hook(self, name: str):
         """创建 k_proj 的 hook"""
@@ -211,8 +240,10 @@ class KVCacheExtractor:
                 # 当 v 被捕获时，说明一个 token 的处理完成了
                 if hasattr(self, '_temp_k') and self._temp_k is not None:
                     self.current_position += 1
-                    self._capture_kv(self._temp_k, self._temp_v, self.current_position)
+                    q = getattr(self, '_temp_q', None)
+                    self._capture_kv(self._temp_k, self._temp_v, self.current_position, q)
                     self._temp_k = None
+                    self._temp_q = None
         return hook_fn
 
     def get_cache_summary(self) -> Dict[str, Any]:
