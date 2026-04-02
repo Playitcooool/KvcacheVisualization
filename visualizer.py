@@ -5,6 +5,8 @@ from plotly.subplots import make_subplots
 import torch
 import numpy as np
 from typing import List, Dict, Optional, Tuple
+from utils.logger import setup_logger
+logger = setup_logger(__name__)
 
 class KVCacheVisualizer:
     """KV Cache 可视化器，使用 Plotly 渲染"""
@@ -145,47 +147,59 @@ class KVCacheVisualizer:
     ) -> go.Figure:
         fig = make_subplots(
             rows=2, cols=2,
-            subplot_titles=("Matrix Heatmap", "Sequence View", "Layer Distribution", "Current Token Info"),
-            specs=[[{"type": "heatmap"}, {"type": "bar"}], [{"type": "scatter"}, {"type": "table"}]],
+            subplot_titles=("Token 序列", "Layer 能量", "Token 信息", "生成进度"),
+            specs=[[{"type": "bar"}, {"type": "scatter"}], [{"type": "table"}, {"type": "indicator"}]],
             vertical_spacing=0.15, horizontal_spacing=0.1
         )
+
+        # Token 序列视图
+        if tokens:
+            token_lens = list(range(1, len(tokens) + 1))
+            fig.add_trace(go.Bar(
+                x=token_lens,
+                y=[1.0] * len(tokens),
+                marker_color='steelblue',
+                showlegend=False,
+                text=tokens,
+                textposition='outside'
+            ), row=1, col=1)
+
+        # Layer 能量散点图
         if current_position > 0 and current_position <= len(k_cache_list):
             k_cache = k_cache_list[current_position - 1]
             k_np = self._tensor_to_numpy(k_cache)
             if k_np.ndim == 5:
-                energy = np.mean(np.linalg.norm(k_np, axis=-1), axis=0)
-                seq_subset = energy[-min(10, energy.shape[0]):, :]
+                layer_means = [np.mean(np.abs(k_np[l])) for l in range(min(k_np.shape[0], self.num_layers))]
             else:
-                seq_subset = k_np
-            fig.add_trace(go.Heatmap(z=seq_subset, colorscale=self.color_scheme, showscale=False), row=1, col=1)
-        if k_cache_list:
-            energies = []
-            for k_cache in k_cache_list[:current_position]:
-                k_np = self._tensor_to_numpy(k_cache)
-                if k_np.ndim == 5:
-                    e = np.mean(np.linalg.norm(k_np, axis=-1))
-                else:
-                    e = np.mean(np.linalg.norm(k_np, axis=-1))
-                energies.append(e)
-            fig.add_trace(go.Bar(x=list(range(1, len(energies) + 1)), y=energies, marker_color='steelblue', showlegend=False), row=1, col=2)
-        if current_position > 0 and current_position <= len(k_cache_list):
-            k_cache = k_cache_list[current_position - 1]
-            k_np = self._tensor_to_numpy(k_cache)
-            if k_np.ndim == 5:
-                layer_means = [np.mean(k_np[l]) for l in range(min(k_np.shape[0], 12))]
-            else:
-                layer_means = [np.mean(k_np)]
-            fig.add_trace(go.Scatter(x=list(range(len(layer_means))), y=layer_means, mode='lines+markers', showlegend=False, line=dict(color='steelblue')), row=2, col=1)
+                layer_means = [np.mean(np.abs(k_np))]
+            fig.add_trace(go.Scatter(
+                x=list(range(len(layer_means))),
+                y=layer_means,
+                mode='lines+markers',
+                showlegend=False,
+                line=dict(color='steelblue')
+            ), row=1, col=2)
+
+        # Token 信息表格
         current_token = tokens[current_position - 1] if current_position > 0 and current_position <= len(tokens) else "N/A"
         token_info = [
-            ["Current Token", current_token],
-            ["Position", f"{current_position}"],
-            ["Total Tokens", f"{len(tokens)}"],
-            ["Num Layers", f"{self.num_layers}"],
-            ["Num Heads", f"{self.num_heads}"],
-            ["Head Dim", f"{self.head_dim}"],
+            ["当前 Token", current_token if current_token else "N/A"],
+            ["位置", f"{current_position}"],
+            ["总 Token 数", f"{len(tokens)}"],
+            ["Layers", f"{self.num_layers}"],
+            ["Heads", f"{self.num_heads}"],
         ]
-        fig.add_trace(go.Table(cells=dict(values=token_info, fill_color='lavender', align='left')), row=2, col=2)
+        fig.add_trace(go.Table(
+            cells=dict(values=token_info, fill_color='lavender', align='left')
+        ), row=2, col=1)
+
+        # 生成进度
+        fig.add_trace(go.Indicator(
+            mode="number",
+            value=current_position,
+            title={"text": "已生成"}
+        ), row=2, col=2)
+
         fig.update_layout(title=dict(text=title, x=0.5), width=900, height=700, showlegend=False)
         return fig
 
@@ -205,8 +219,6 @@ class KVCacheVisualizer:
         if not k_cache_list:
             return stats
         n = len(k_cache_list)
-        if n > 0:
-            stats['cache_efficiency'] = round(200 / (n + 1), 2)
         total_bytes = 0
         for k, v in zip(k_cache_list, v_cache_list):
             k_np = self._tensor_to_numpy(k)
@@ -230,6 +242,8 @@ class KVCacheVisualizer:
             all_values.extend(list(np.abs(k_np)) + list(np.abs(v_np)))
         all_values = np.array(all_values)
         stats['sparsity'] = round(np.mean(np.abs(all_values) < threshold) * 100, 2)
+        # Cache efficiency = 100% - sparsity (低稀疏度 = 高效率)
+        stats['cache_efficiency'] = round(max(0, 100 - stats['sparsity']), 2)
         return stats
 
     def create_stats_gauge(

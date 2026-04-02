@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, Union
 import os
 
+from utils.logger import setup_logger
+logger = setup_logger(__name__)
 from device_utils import get_device_from_string, DeviceManager, list_available_devices
 
 # 本地模型缓存目录
@@ -421,7 +423,7 @@ class PyTorchLoader(ModelLoader):
                 self.device = target_device
                 return self._model, self._tokenizer, self.get_config()
         except Exception as e:
-            print(f"Failed to load as GPT-2: {e}")
+            logger.debug(f"Failed to load as GPT-2: {e}")
 
         # 无法识别格式，返回配置信息
         return None, None, self._config

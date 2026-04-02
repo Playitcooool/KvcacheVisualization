@@ -3,6 +3,8 @@ import torch
 from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 import copy
+from utils.logger import setup_logger
+logger = setup_logger(__name__)
 
 @dataclass
 class KVCacheEntry:
@@ -108,6 +110,7 @@ class KVCacheExtractor:
 
         if self.debug:
             self._debug_info.append(f"Detected attention type: {self._attention_type}")
+            logger.debug(f"Detected attention type: {self._attention_type}")
 
     def register_hooks(self, model: torch.nn.Module) -> List[Any]:
         """
@@ -138,12 +141,14 @@ class KVCacheExtractor:
                 self._handles.append(handle)
                 if self.debug:
                     self._debug_info.append(f"Registered c_attn hook on: {name}")
+                    logger.debug(f"Registered c_attn hook on: {name}")
 
     def _create_c_attn_hook(self, name: str):
         """创建 GPT-2 c_attn 的 hook"""
         def hook_fn(module, input, output):
             if self.debug:
                 self._debug_info.append(f"c_attn {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+                logger.debug(f"c_attn {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
             if isinstance(output, torch.Tensor) and output.dim() == 3:
                 # output: (batch, seq, hidden*3)
                 batch, seq_len, hidden3 = output.shape
@@ -190,6 +195,7 @@ class KVCacheExtractor:
         def hook_fn(module, input, output):
             if self.debug:
                 self._debug_info.append(f"k_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+                logger.debug(f"k_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
             if isinstance(output, torch.Tensor):
                 self._temp_k = output
         return hook_fn
@@ -199,6 +205,7 @@ class KVCacheExtractor:
         def hook_fn(module, input, output):
             if self.debug:
                 self._debug_info.append(f"v_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
+                logger.debug(f"v_proj {name}: {output.shape if isinstance(output, torch.Tensor) else type(output)}")
             if isinstance(output, torch.Tensor):
                 self._temp_v = output
                 # 当 v 被捕获时，说明一个 token 的处理完成了

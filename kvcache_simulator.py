@@ -2,6 +2,8 @@
 import torch
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
+from utils.logger import setup_logger
+logger = setup_logger(__name__)
 
 # 最大历史长度限制，防止内存溢出
 MAX_HISTORY_LENGTH = 100
