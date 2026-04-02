@@ -157,7 +157,7 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
             pos = i + 1
             if pos <= len(extractor.kvcache_history):
                 entry = extractor.kvcache_history[pos - 1]
-                simulator.add_entry(pos, entry.k_cache, entry.v_cache, token_id, token_str)
+                simulator.add_entry(pos, entry.k_cache, entry.v_cache, token_id, token_str, entry.attn_weights)
             else:
                 k = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
                 v = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
@@ -262,7 +262,7 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
 
             if hist_idx < len(extractor.kvcache_history):
                 entry = extractor.kvcache_history[hist_idx]
-                simulator.add_entry(pos, entry.k_cache, entry.v_cache, token_id, token_str)
+                simulator.add_entry(pos, entry.k_cache, entry.v_cache, token_id, token_str, entry.attn_weights)
             else:
                 k = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
                 v = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)

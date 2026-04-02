@@ -137,7 +137,7 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
     attn_weights_list = []
     if st.session_state.simulator:
         for entry in st.session_state.simulator.history:
-            attn_weights_list.append(entry.attn_weights)
+            attn_weights_list.append(getattr(entry, 'attn_weights', None))
 
     tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量", "🧠 Attention", "⭐ Token重要性"]
@@ -334,7 +334,7 @@ def render_comparison_panel(clean_bpe_token_func):
             tokens = model.simulator.tokens or []
             k_cache_list = [h.k_cache for h in model.simulator.history]
             v_cache_list = [h.v_cache for h in model.simulator.history]
-            attn_weights = [h.attn_weights for h in model.simulator.history]
+            attn_weights = [getattr(h, 'attn_weights', None) for h in model.simulator.history]
 
             model_data[model_id] = {
                 "tokens": tokens,

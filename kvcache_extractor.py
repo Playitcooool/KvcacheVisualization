@@ -180,6 +180,8 @@ class KVCacheExtractor:
                 attn_weights = torch.softmax(scores, dim=-1)
 
                 # 为每个 token 位置创建 entry
+                # 注意：GPT2 在一次 forward pass 中处理所有 seq_len 个位置
+                # attn_weights: [batch, heads, seq, seq]，其中 attn_weights[:,:,pos,:] 是位置 pos 的注意力向量
                 for pos in range(seq_len):
                     self.kvcache_history.append(KVCacheEntry(
                         position=self.current_position - seq_len + pos + 1,
@@ -187,7 +189,7 @@ class KVCacheExtractor:
                         v_cache=v[:, :, pos:pos+1, :].clone(),
                         token_id=-1,
                         token_str="",
-                        attn_weights=attn_weights[:, :, pos:pos+1, :].clone()
+                        attn_weights=attn_weights.clone()
                     ))
         return hook_fn
 

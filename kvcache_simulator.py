@@ -16,6 +16,7 @@ class KVCacheEntry:
     v_cache: torch.Tensor
     token_id: int
     token_str: str
+    attn_weights: Optional[torch.Tensor] = None
 
 
 class KVCacheSimulator:
@@ -51,7 +52,8 @@ class KVCacheSimulator:
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
         token_id: Optional[int] = None,
-        token_str: Optional[str] = ""
+        token_str: Optional[str] = "",
+        attn_weights: Optional[torch.Tensor] = None
     ):
         """添加一个新的 KV Cache 条目"""
         if position <= self.current_position:
@@ -67,7 +69,8 @@ class KVCacheSimulator:
             k_cache=k_cache.clone(),
             v_cache=v_cache.clone(),
             token_id=token_id or -1,
-            token_str=token_str or ""
+            token_str=token_str or "",
+            attn_weights=attn_weights
         )
         self.history.append(entry)
         self.current_position = position
