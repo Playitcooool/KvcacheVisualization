@@ -329,8 +329,9 @@ class KVCacheVisualizer:
 
         # attn_np shape: [batch, heads, seq, seq] -> 取 batch=0, 平均所有 heads
         if attn_np.ndim == 4:
-            # 平均所有 heads
-            attn_avg = np.mean(attn_np, axis=1)  # [seq, seq]
+            # 平均所有 heads，然后取 batch=0
+            attn_avg = np.mean(attn_np, axis=1)  # [batch, seq, seq]
+            attn_avg = attn_avg[0]  # [seq, seq]
         else:
             attn_avg = attn_np
 
