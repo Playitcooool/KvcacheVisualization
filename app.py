@@ -3,6 +3,8 @@ import streamlit as st
 import torch
 from typing import Optional, Tuple
 import os
+import signal
+import sys
 
 from model_loader import ModelLoader, HuggingFaceLoader
 from kvcache_extractor import KVCacheExtractor
@@ -13,6 +15,8 @@ from i18n import t, get_text, TRANSLATIONS
 from theme import get_theme, get_theme_css, get_plotly_template, THEMES
 from exporter import export_to_json, export_to_csv
 from prompts import PROMPT_TEMPLATES, get_template_names, get_template, fill_template
+from utils.logger import setup_logger
+logger = setup_logger(__name__)
 
 # 页面配置
 st.set_page_config(
@@ -85,6 +89,7 @@ def init_session_state():
         'generated_text': '',  # 存储解码后的完整文本
         'generation_input_ids': None,
         'attention_mask': None,
+        'generation_thread': None,  # 线程句柄
     }
 
     for key, value in defaults.items():
@@ -182,7 +187,8 @@ def run_generation_step(prompt: str, max_new_tokens: int = 50):
                 max_new_tokens=max_new_tokens,
                 do_sample=True,
                 temperature=0.7,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                use_cache=False  # 禁用 kv cache，避免缓存状态干扰
             )
 
         # 移除 hooks
@@ -233,9 +239,18 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         max_new_tokens: 最大生成 token 数
         batch_size: 每批生成的 token 数
     """
-    # MAX_HISTORY_LENGTH imported at top of file
+    logger.debug("========== run_generation_streaming START ==========")
+    logger.debug(f"is_generating={st.session_state.is_generating}, gen_complete={st.session_state.generation_complete}")
+    logger.debug(f"streaming_pending={st.session_state.streaming_pending}")
+    logger.debug(f"tokens={len(st.session_state.tokens)}, current_position={st.session_state.current_position}")
+    logger.debug(f"prompt_length={st.session_state.get('prompt_length', 'N/A')}")
+    logger.debug(f"generation_input_ids shape: {st.session_state.generation_input_ids.shape if st.session_state.generation_input_ids is not None else None}")
 
-    if st.session_state.generation_complete or st.session_state.is_generating:
+    if st.session_state.generation_complete:
+        logger.debug("Skipping: generation_complete=True")
+        return
+    if st.session_state.is_generating:
+        logger.debug("Skipping: is_generating=True")
         return
 
     st.session_state.is_generating = True
@@ -265,10 +280,11 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         else:
             # 继续之前的生成，使用累积的 input_ids
             input_ids = st.session_state.generation_input_ids
-            attention_mask = st.session_state.attention_mask
+            # 必须重新创建 attention_mask，因为 input_ids 长度已经变了！
+            attention_mask = torch.ones_like(input_ids)
 
         # 安全检查
-        if input_ids is None or attention_mask is None:
+        if input_ids is None:
             st.error("输入状态异常，请刷新页面重试")
             st.session_state.is_generating = False
             return
@@ -283,9 +299,12 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
         current_batch_size = min(batch_size, remaining)
 
         # 注册 hooks
+        logger.debug("Registering hooks...")
         handles = extractor.register_hooks(model)
+        logger.debug(f"Detected attention type: {extractor._attention_type}")
 
         # 生成一批 token
+        logger.debug("Calling model.generate...")
         with torch.no_grad():
             output = model.generate(
                 input_ids,
@@ -293,35 +312,56 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
                 max_new_tokens=current_batch_size,
                 do_sample=True,
                 temperature=0.7,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                use_cache=False  # 禁用 kv cache，避免缓存状态干扰
             )
+        logger.debug(f"model.generate done, output.shape={output.shape}")
 
         # 移除 hooks
         for handle in handles:
             handle.remove()
+        logger.debug(f"After hooks removed: extractor.kvcache_history len={len(extractor.kvcache_history)}")
 
         # 解码新生成的 token（从上次结束位置开始）
         start_pos = st.session_state.prompt_length + st.session_state.current_position
+        if start_pos >= len(output[0]):
+            logger.debug("start_pos >= output_len, marking complete")
+            st.warning(f"警告: start_pos={start_pos} 超出输出长度={len(output[0])}")
+            st.session_state.generation_complete = True
+            st.session_state.streaming_pending = False
+            st.session_state.is_generating = False
+            return
         new_ids = output[0][start_pos:start_pos + current_batch_size]
         new_tokens = tokenizer.convert_ids_to_tokens(new_ids)
+        logger.debug(f"new_ids count={len(new_ids)}, start_pos={start_pos}, prompt_length={st.session_state.prompt_length}")
+        logger.debug(f"extractor.kvcache_history len={len(extractor.kvcache_history)}")
+
+        # 计算 extractor 历史中的起始索引
+        # extractor 历史是累积的，每次生成后追加新 entries
+        # 新 token 在 extractor 历史中的起始索引 = prompt_length + current_position
+        extractor_start_idx = st.session_state.prompt_length + st.session_state.current_position
 
         # 更新 extractor 和 simulator（仅新 token）
         for i, (token_id, token_str) in enumerate(zip(new_ids.tolist(), new_tokens)):
             pos = st.session_state.current_position + i + 1
+            hist_idx = extractor_start_idx + i  # 在 extractor 历史中的索引
 
             # 检查历史长度限制
             if len(simulator.history) >= MAX_HISTORY_LENGTH:
                 st.session_state.generation_complete = True
+                st.session_state.streaming_pending = False
                 st.session_state.is_generating = False
                 break
 
-            if pos <= len(extractor.kvcache_history):
-                entry = extractor.kvcache_history[pos - 1]
+            if hist_idx < len(extractor.kvcache_history):
+                entry = extractor.kvcache_history[hist_idx]
                 simulator.add_entry(pos, entry.k_cache, entry.v_cache, token_id, token_str)
+                logger.debug(f"Added from extractor: pos={pos}, hist_idx={hist_idx}, k_cache.sum={entry.k_cache.abs().sum().item():.6f}")
             else:
                 k = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
                 v = torch.zeros(1, simulator.num_heads, 1, simulator.head_dim)
                 simulator.add_entry(pos, k, v, token_id, token_str)
+                logger.debug(f"Added FALLBACK zeros: pos={pos}, hist_idx={hist_idx} (extractor has {len(extractor.kvcache_history)} entries)")
 
         # 更新 session state
         st.session_state.token_ids.extend(new_ids.tolist())
@@ -336,20 +376,23 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
 
         # 检查是否完成
         if st.session_state.current_position >= max_new_tokens:
+            logger.debug("Generation complete!")
             st.session_state.generation_complete = True
             st.session_state.streaming_pending = False
         else:
             # 还有更多 token 需要生成，重置 hooks 以便下次继续
+            logger.debug(f"Batch done, more to generate later. current_position={st.session_state.current_position}")
             st.session_state.is_generating = False
 
     except Exception as e:
         import traceback
+        logger.debug(f"EXCEPTION: {str(e)}")
         st.error(f"流式生成失败: {str(e)}")
         with st.expander("详细错误信息"):
             st.text(traceback.format_exc())
         st.session_state.is_generating = False
     finally:
-        # GPU 内存清理
+        st.session_state.is_generating = False
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -372,18 +415,6 @@ def reset_simulation():
 
 # 初始化
 init_session_state()
-
-# 流式生成自动继续检查
-# 如果有待处理的流式生成任务，继续执行
-if (st.session_state.get('streaming_pending', False) and
-    st.session_state.model_loaded and
-    not st.session_state.generation_complete):
-    run_generation_streaming(
-        st.session_state.streaming_prompt,
-        max_new_tokens=st.session_state.streaming_max_tokens,
-        batch_size=st.session_state.streaming_batch_size
-    )
-    st.rerun()
 
 # 主界面
 st.markdown('<h1 class="main-header">KV Cache 可视化器</h1>', unsafe_allow_html=True)
@@ -569,7 +600,7 @@ else:
         prompt = st.text_input("输入 Prompt", value="Hello, how are you?")
 
         # 批量大小
-        batch_size = st.slider("生成 Token 数", 5, 50, 20)
+        batch_size = st.slider("生成 Token 数", 10, 500, 50)
 
         # 流式生成模式
         streaming_mode = st.checkbox("流式生成模式", value=False, help="启用后分批生成 token，每批后更新可视化")
@@ -581,24 +612,25 @@ else:
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if not st.session_state.generation_complete:
-                if st.button("▶ 开始生成" if not st.session_state.is_generating else "⏳ 生成中..."):
+            if st.session_state.generation_complete:
+                st.success("✓ 生成完成")
+            elif st.session_state.is_generating:
+                st.info("⏳ 生成中...")
+            else:
+                if st.button("▶ 开始生成" if not st.session_state.streaming_pending else "▶ 继续生成"):
                     if streaming_mode:
                         # 设置流式生成状态
                         st.session_state.streaming_pending = True
                         st.session_state.streaming_prompt = prompt
                         st.session_state.streaming_max_tokens = batch_size
                         st.session_state.streaming_batch_size = stream_batch_size
-                        st.session_state.is_generating = True
+                        # run_generation_streaming 内部会设置 is_generating
                         run_generation_streaming(prompt, max_new_tokens=batch_size, batch_size=stream_batch_size)
-                        # 如果未完成，下次 rerun 时继续
-                        if not st.session_state.generation_complete:
-                            st.rerun()
+                        # 刷新 UI 显示新生成的数据
+                        st.rerun()
                     else:
                         run_generation_step(prompt, max_new_tokens=batch_size)
-                    st.rerun()
-            else:
-                st.success("✓ 生成完成")
+                        st.rerun()
         with col_btn2:
             if st.button("🔄 重新生成"):
                 reset_simulation()
@@ -641,7 +673,8 @@ else:
             st.session_state.current_position = slider_pos
 
             if 1 <= slider_pos <= len(st.session_state.tokens):
-                st.markdown(f"**位置:** Token {slider_pos} = \"{st.session_state.tokens[slider_pos-1]}\"")
+                cleaned = clean_bpe_token(st.session_state.tokens[slider_pos-1])
+                st.markdown(f"**位置:** Token {slider_pos} = \"{cleaned}\"")
 
     with col_right:
         st.markdown("### KV Cache 可视化区域")
@@ -691,31 +724,13 @@ else:
                     )
 
             # Tab 选择
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 矩阵热力图", "📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量"])
-
-            with tab1:
-                if st.session_state.current_position > 0:
-                    k_cache = st.session_state.simulator.history[st.session_state.current_position - 1].k_cache
-                    fig = st.session_state.visualizer.create_heatmap(
-                        k_cache,
-                        title=f"KV Cache 热力图 (Token {st.session_state.current_position})"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # 调试信息
-                    if k_cache.abs().sum() < 1e-6:
-                        st.warning("⚠️ KV Cache 数据显示为空（可能是因为 Hook 未捕获到数据）")
-                        with st.expander("调试信息"):
-                            st.code(f"k_cache shape: {k_cache.shape}")
-                            st.code(f"k_cache sum: {k_cache.abs().sum()}")
-                            if st.session_state.extractor:
-                                debug_info = st.session_state.extractor.get_debug_info()
-                                if debug_info:
-                                    st.text("Hook 捕获记录:\n" + "\n".join(debug_info[-10:]))
+            tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量"])
 
             with tab2:
+                # 清理 BPE tokens 用于显示
+                cleaned_tokens = [clean_bpe_token(t) for t in st.session_state.tokens[:st.session_state.current_position]]
                 fig = st.session_state.visualizer.create_sequence_view(
-                    st.session_state.tokens[:st.session_state.current_position],
+                    cleaned_tokens,
                     k_cache_list[:st.session_state.current_position],
                     title="Token 序列生成视图"
                 )
@@ -749,7 +764,7 @@ else:
 
             with tab5:
                 fig = st.session_state.visualizer.create_dashboard(
-                    st.session_state.tokens,
+                    cleaned_tokens,
                     k_cache_list,
                     v_cache_list,
                     st.session_state.current_position,
