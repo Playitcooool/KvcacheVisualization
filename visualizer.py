@@ -625,3 +625,78 @@ class KVCacheVisualizer:
         )
 
         return fig
+
+    def create_layer_energy_evolution(
+        self,
+        k_cache_list: List[torch.Tensor],
+        title: str = "Layer Energy Evolution"
+    ) -> go.Figure:
+        """
+        展示生成过程中各层 KV energy 的变化曲线。
+        X轴=token位置，Y轴=层能量，每条线=一层。
+
+        Args:
+            k_cache_list: 每个 token 位置的 K cache 列表
+            title: 图表标题
+
+        Returns:
+            Plotly Figure
+        """
+        if not k_cache_list:
+            return go.Figure()
+
+        num_positions = len(k_cache_list)
+        x = list(range(1, num_positions + 1))
+
+        fig = go.Figure()
+        colors = px.colors.qualitative.Set2
+
+        # Pre-convert all tensors and cache per-layer data
+        converted_caches = []
+        for k_cache in k_cache_list:
+            k_np = self._tensor_to_numpy(k_cache)
+            # k_np: [batch, heads, seq, head_dim] or [batch, layers, heads, seq, head_dim]
+            if k_np.ndim == 5:
+                # [batch, layers, heads, seq, head_dim] - extract all layers at once
+                num_layers_actual = min(k_np.shape[1], self.num_layers)
+                layers_data = [k_np[0, i] for i in range(num_layers_actual)]
+                converted_caches.append(('layered', layers_data))
+            else:
+                converted_caches.append(('flat', k_np))
+
+        for layer_idx in range(self.num_layers):
+            layer_energies = []
+            for cache_data in converted_caches:
+                if cache_data[0] == 'layered':
+                    if layer_idx < len(cache_data[1]):
+                        layer_k = cache_data[1][layer_idx]
+                    else:
+                        layer_k = cache_data[1][-1] if cache_data[1] else None
+                else:
+                    layer_k = cache_data[1]
+
+                if layer_k is None:
+                    energy = 0.0
+                else:
+                    energy = float(np.mean(np.linalg.norm(layer_k, axis=-1)))
+                layer_energies.append(energy)
+
+            fig.add_trace(go.Scatter(
+                x=x,
+                y=layer_energies,
+                mode='lines+markers',
+                name=f'Layer {layer_idx + 1}',
+                line=dict(color=colors[layer_idx % len(colors)]),
+                marker=dict(size=6)
+            ))
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            xaxis_title="Token Position",
+            yaxis_title="Layer Energy (L2 norm)",
+            width=600,
+            height=400,
+            showlegend=True,
+            legend=dict(y=0.99, x=0.01)
+        )
+        return fig
