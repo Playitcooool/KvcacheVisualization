@@ -501,3 +501,125 @@ class KVCacheVisualizer:
         fig.update_yaxes(title_text="Attention")
 
         return fig
+
+    def create_token_importance(
+        self,
+        k_cache_list: List[torch.Tensor],
+        tokens: List[str],
+        title: str = "Token Importance (by KV Energy)"
+    ) -> go.Figure:
+        """
+        创建 Token 重要性视图 - 按 KV Energy 排序显示 token。
+
+        Args:
+            k_cache_list: KV Cache tensor 列表
+            tokens: token 列表
+            title: 图表标题
+
+        Returns:
+            Plotly Figure
+        """
+        if not k_cache_list or not tokens:
+            return go.Figure()
+
+        # 计算每个 token 的 KV energy
+        energies = []
+        for k in k_cache_list:
+            if k is not None and k.numel() > 0:
+                # 计算 L2 norm
+                energy = torch.norm(k).item()
+            else:
+                energy = 0
+            energies.append(energy)
+
+        # 创建 (token, energy) 对并排序
+        token_energies = list(zip(tokens, energies))
+        token_energies.sort(key=lambda x: x[1], reverse=True)
+
+        sorted_tokens = [t for t, _ in token_energies]
+        sorted_energies = [e for _, e in token_energies]
+
+        # 颜色映射 - 高能量用深色
+        max_energy = max(sorted_energies) if sorted_energies else 1
+        colors = [f"hsl(220, {min(100, 30 + (e / max_energy) * 70)}%, {80 - (e / max_energy) * 30}%)"
+                  for e in sorted_energies]
+
+        fig = go.Figure(data=go.Bar(
+            x=list(range(len(sorted_tokens))),
+            y=sorted_energies,
+            marker_color=colors,
+            text=sorted_tokens,
+            textposition='outside',
+            hovertemplate="<b>%{text}</b><br>Energy: %{y:.4f}<extra></extra>"
+        ))
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            xaxis_title="Token Rank (by Energy)",
+            yaxis_title="KV Energy (L2 Norm)",
+            width=800,
+            height=400,
+            showlegend=False
+        )
+        fig.update_xaxes(
+            tickmode='array',
+            tickvals=list(range(len(sorted_tokens))),
+            ticktext=[f"{i+1}. {t[:10]}..." if len(t) > 10 else f"{i+1}. {t}"
+                     for i, t in enumerate(sorted_tokens)],
+            tickangle=45
+        )
+
+        return fig
+
+    def create_token_importance_heatmap(
+        self,
+        k_cache_list: List[torch.Tensor],
+        tokens: List[str],
+        title: str = "Token Importance Heatmap"
+    ) -> go.Figure:
+        """
+        创建 Token 重要性热力图 - 展示能量随位置的变化。
+
+        Args:
+            k_cache_list: KV Cache tensor 列表
+            tokens: token 列表
+            title: 图表标题
+
+        Returns:
+            Plotly Figure
+        """
+        if not k_cache_list:
+            return go.Figure()
+
+        seq_len = len(k_cache_list)
+
+        # 计算能量
+        energies = []
+        for k in k_cache_list:
+            if k is not None and k.numel() > 0:
+                energy = torch.norm(k).item()
+            else:
+                energy = 0
+            energies.append(energy)
+
+        # 创建热力图数据 - 单行多列
+        import numpy as np
+        energy_matrix = np.array(energies).reshape(1, -1)
+
+        fig = px.imshow(
+            energy_matrix,
+            x=[f"{i}: {tokens[i][:8]}..." if len(tokens[i]) > 8 else f"{i}: {tokens[i]}"
+               for i in range(seq_len)],
+            y=["Energy"],
+            title=title,
+            color_continuous_scale="YlOrRd",
+            aspect="auto"
+        )
+
+        fig.update_layout(
+            xaxis_title="Token Position",
+            yaxis_title="",
+            showlegend=False
+        )
+
+        return fig

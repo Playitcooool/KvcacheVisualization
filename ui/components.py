@@ -1,6 +1,7 @@
 """Reusable UI components."""
 
 import streamlit as st
+import torch
 
 
 def render_generation_controls():
@@ -136,8 +137,8 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
         for entry in st.session_state.simulator.history:
             attn_weights_list.append(entry.attn_weights)
 
-    tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-        ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量", "🧠 Attention"]
+    tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+        ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量", "🧠 Attention", "⭐ Token重要性"]
     )
 
     with tab2:
@@ -230,3 +231,45 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 st.info("当前 token 的 Attention 数据不可用")
         else:
             st.info("先生成 token 后才能查看 Attention 可视化")
+
+    with tab8:
+        # Token Importance 可视化
+        if st.session_state.current_position > 0 and k_cache_list:
+            # 选择视图模式
+            importance_view_mode = st.radio(
+                "Token 重要性视图模式",
+                ["排序柱状图", "热力图"],
+                horizontal=True
+            )
+
+            if importance_view_mode == "排序柱状图":
+                fig = visualizer.create_token_importance(
+                    k_cache_list[:st.session_state.current_position],
+                    cleaned_tokens,
+                    title="Token 重要性排序 (KV Energy)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                fig = visualizer.create_token_importance_heatmap(
+                    k_cache_list[:st.session_state.current_position],
+                    cleaned_tokens,
+                    title="Token 重要性热力图"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 显示统计信息
+            st.markdown("#### Top 5 最重要 Token:")
+            energies = []
+            for k in k_cache_list[:st.session_state.current_position]:
+                if k is not None and k.numel() > 0:
+                    energies.append(torch.norm(k).item())
+                else:
+                    energies.append(0)
+
+            token_energies = list(zip(cleaned_tokens, energies))
+            token_energies.sort(key=lambda x: x[1], reverse=True)
+
+            for i, (token, energy) in enumerate(token_energies[:5]):
+                st.markdown(f"**{i+1}.** `{token}` - Energy: `{energy:.4f}`")
+        else:
+            st.info("先生成 token 后才能查看 Token 重要性")
