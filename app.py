@@ -69,6 +69,7 @@ def init_session_state():
         'generated_text': '', 'generation_input_ids': None,
         'attention_mask': None, 'generation_thread': None,
         'max_history_length': 100,  # KV Cache 缓存大小
+        'display_token_limit': 50,  # 渐进式渲染：初始显示 token 数
     }
     for key, value in defaults.items():
         if key not in st.session_state:

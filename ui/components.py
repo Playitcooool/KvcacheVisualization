@@ -128,6 +128,19 @@ def render_export_buttons(stats):
             )
 
 
+def _render_load_more_button(tab_id: str = ""):
+    """Render '加载更多' button and update display_token_limit session state."""
+    total = len(st.session_state.tokens)
+    current_limit = st.session_state.get('display_token_limit', 50)
+
+    if current_limit >= total:
+        return  # No more to load
+
+    if st.button("加载更多", key=f"load_more_btn_{tab_id}"):
+        st.session_state.display_token_limit = min(current_limit + 25, total)
+        st.rerun()
+
+
 def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token_func):
     """Render all visualization tabs."""
     cleaned_tokens = [clean_bpe_token_func(t) for t in st.session_state.tokens[:st.session_state.current_position]]
@@ -150,6 +163,7 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
             title="Token 序列生成视图"
         )
         st.plotly_chart(fig, use_container_width=True)
+        _render_load_more_button("sequence")
 
     with tab3:
         if st.session_state.current_position > 0:
@@ -192,6 +206,7 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 title="层级能量热力图"
             )
             st.plotly_chart(fig, use_container_width=True)
+        _render_load_more_button("layer_energy")
 
     with tab7:
         # Attention Pattern 可视化
@@ -275,6 +290,8 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 st.markdown(f"**{i+1}.** `{token}` - Energy: `{energy:.4f}`")
         else:
             st.info("先生成 token 后才能查看 Token 重要性")
+
+        _render_load_more_button("token_importance")
 
     with tab9:
         render_layer_analysis_tab(
