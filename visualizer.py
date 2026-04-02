@@ -469,14 +469,15 @@ class KVCacheVisualizer:
             attn_np = self._tensor_to_numpy(attn)
 
             if attn_np.ndim == 4:
-                attn_avg = np.mean(attn_np, axis=1)  # 平均 heads
-                attn_avg = attn_avg[-1, :] if attn_avg.shape[0] > 1 else attn_avg[0]
+                attn_avg = np.mean(attn_np, axis=1)  # [batch, seq, seq]
+                # 取最后一个位置的注意力向量（行）
+                attn_avg = attn_avg[-1, :]  # [seq,]
             else:
-                attn_avg = attn_np
+                attn_avg = np.asarray(attn_np).squeeze()
 
             # 限制显示的 token 数量
-            max_tokens = min(len(attn_avg), 20)
-            attn_display = attn_avg[-max_tokens:] if len(attn_avg) > max_tokens else attn_avg
+            max_tokens = min(attn_avg.shape[-1], 20)
+            attn_display = attn_avg[..., -max_tokens:] if attn_avg.shape[-1] > max_tokens else attn_avg
 
             x_labels = tokens[-max_tokens:] if len(tokens) >= max_tokens else tokens
 
@@ -486,7 +487,7 @@ class KVCacheVisualizer:
                     y=attn_display,
                     marker_color='steelblue',
                     showlegend=False,
-                    text=[f"{float(v):.2f}" for v in attn_display],
+                    text=[f"{v.item():.2f}" for v in attn_display],
                     textposition='outside'
                 ),
                 row=i + 1,
