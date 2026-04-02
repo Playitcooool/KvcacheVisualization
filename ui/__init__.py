@@ -9,6 +9,7 @@ from ui.components import (
     render_replay_control,
     render_export_buttons,
     render_visualization_tabs,
+    render_layer_analysis_tab,
     render_comparison_panel,
 )
 from ui.layout import create_two_column_layout
@@ -22,6 +23,7 @@ __all__ = [
     "render_replay_control",
     "render_export_buttons",
     "render_visualization_tabs",
+    "render_layer_analysis_tab",
     "render_comparison_panel",
     "create_two_column_layout",
 ]

@@ -139,8 +139,8 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
         for entry in st.session_state.simulator.history:
             attn_weights_list.append(getattr(entry, 'attn_weights', None))
 
-    tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
-        ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量", "🧠 Attention", "⭐ Token重要性"]
+    tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+        ["📈 序列视图", "🔳 层级分布", "📐 统计数据", "🖥️ 综合仪表盘", "🔥 层级能量", "🧠 Attention", "⭐ Token重要性", "📊 层分析"]
     )
 
     with tab2:
@@ -275,6 +275,51 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 st.markdown(f"**{i+1}.** `{token}` - Energy: `{energy:.4f}`")
         else:
             st.info("先生成 token 后才能查看 Token 重要性")
+
+    with tab9:
+        render_layer_analysis_tab(
+            k_cache_list,
+            attn_weights_list,
+            visualizer
+        )
+
+
+def render_layer_analysis_tab(k_cache_list, attn_weights_list, visualizer):
+    """Render the Layer Analysis tab with energy evolution and attention stats."""
+    st.markdown("### 📊 层能量变化")
+    if k_cache_list:
+        fig_evo = visualizer.create_layer_energy_evolution(
+            k_cache_list,
+            title="各层能量随生成位置的变化"
+        )
+        st.plotly_chart(fig_evo, use_container_width=True)
+    else:
+        st.info("先生成 token 后才能查看层能量变化")
+
+    st.markdown("---")
+    st.markdown("### 🔄 Attention 层间统计")
+
+    metric = st.radio(
+        "选择统计指标",
+        ["coverage", "sparsity", "max_val"],
+        format_func=lambda x: {
+            "coverage": "覆盖度",
+            "sparsity": "稀疏度",
+            "max_val": "最大值"
+        }[x],
+        horizontal=True
+    )
+
+    stats = visualizer.calculate_attention_stats_by_layer(attn_weights_list)
+    if stats:
+        fig_stats = visualizer.create_attention_layer_stats(
+            stats,
+            metric=metric,
+            title=f"Attention {metric} by Layer"
+        )
+        st.plotly_chart(fig_stats, use_container_width=True)
+    else:
+        st.info("先生成 token 后才能查看 Attention 层间统计")
 
 
 def render_comparison_panel(clean_bpe_token_func):
