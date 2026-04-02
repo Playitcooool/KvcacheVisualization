@@ -400,6 +400,11 @@ else:
             render_export_buttons(stats)
             render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token)
 
+            # 多模型对比面板（展开显示）
+            st.markdown("---")
+            with st.expander("📊 模型对比", expanded=False):
+                render_comparison_panel(clean_bpe_token)
+
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #888;'>"

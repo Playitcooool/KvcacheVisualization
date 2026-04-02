@@ -3,6 +3,8 @@
 import streamlit as st
 import torch
 
+from visualization.comparison import ComparisonVisualizer
+
 
 def render_generation_controls():
     """Render generation buttons and status."""
@@ -273,3 +275,134 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 st.markdown(f"**{i+1}.** `{token}` - Energy: `{energy:.4f}`")
         else:
             st.info("先生成 token 后才能查看 Token 重要性")
+
+
+def render_comparison_panel(clean_bpe_token_func):
+    """Render multi-model comparison panel.
+
+    This panel shows comparison visualizations when multiple models are loaded.
+    For single model, shows a placeholder message.
+    """
+    from i18n import t
+
+    st.markdown("### 📊 模型对比")
+
+    # 获取模型管理器（如果存在）
+    model_manager = getattr(st.session_state, 'model_manager', None)
+
+    if model_manager is None or model_manager.num_models < 2:
+        # 单模型模式 - 显示提示
+        st.info("⚠️ 对比模式需要加载至少 2 个模型")
+
+        if model_manager and model_manager.num_models == 1:
+            model = model_manager.active_model
+            if model:
+                st.markdown(f"**当前已加载:** `{model.name}` ({model.num_layers} 层, {model.num_heads} 头)")
+
+        st.markdown("""
+        **多模型对比模式:**
+
+        1. 在侧边栏加载第一个模型
+        2. 使用「添加对比模型」加载第二个模型
+        3. 返回此处查看对比可视化
+
+        **支持三种对比模式:**
+        - 📐 **分屏对比** - 左右并排显示
+        - 🔄 **叠加对比** - 同一图表叠加曲线
+        - 📊 **统计对比** - 柱状图对比各项指标
+        """)
+        return
+
+    # 多模型模式 - 显示对比可视化
+    comparison_visualizer = ComparisonVisualizer()
+
+    # 选择对比模式
+    comparison_mode = st.radio(
+        "对比模式",
+        ["📐 分屏对比", "🔄 叠加对比", "📊 统计对比"],
+        horizontal=True
+    )
+
+    # 获取所有模型的数据
+    model_data = {}
+    model_stats = {}
+
+    for model_id in model_manager.model_ids:
+        model = model_manager.get_model(model_id)
+        if model and model.simulator:
+            # 获取 token 和 cache 数据
+            tokens = model.simulator.tokens or []
+            k_cache_list = [h.k_cache for h in model.simulator.history]
+            v_cache_list = [h.v_cache for h in model.simulator.history]
+            attn_weights = [h.attn_weights for h in model.simulator.history]
+
+            model_data[model_id] = {
+                "tokens": tokens,
+                "k_cache_list": k_cache_list,
+                "v_cache_list": v_cache_list,
+                "attn_weights": attn_weights,
+            }
+
+            # 计算统计
+            if model.visualizer and k_cache_list and v_cache_list:
+                stats = model.visualizer.calculate_cache_stats(k_cache_list, v_cache_list)
+                model_stats[model_id] = stats
+
+    if comparison_mode == "📐 分屏对比":
+        view_type = st.selectbox(
+            "分屏视图类型",
+            ["sequence", "layer"],
+            format_func=lambda x: {"sequence": "序列视图", "layer": "层级分布"}.get(x, x)
+        )
+
+        fig = comparison_visualizer.create_split_view(
+            model_data,
+            view_type=view_type,
+            title=f"Model Comparison - {view_type}"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif comparison_mode == "🔄 叠加对比":
+        view_type = st.selectbox(
+            "叠加视图类型",
+            ["sequence", "layer"],
+            format_func=lambda x: {"sequence": "序列视图", "layer": "层级分布"}.get(x, x)
+        )
+
+        fig = comparison_visualizer.create_overlay_view(
+            model_data,
+            view_type=view_type,
+            title=f"Model Comparison - Overlay"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:  # 统计对比
+        # 显示模型信息
+        st.markdown("#### 模型统计指标对比:")
+        for model_id, stats in model_stats.items():
+            with st.expander(f"📌 {model_id}: {stats.get('num_generated_tokens', 0)} tokens"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Cache 效率", f"{stats.get('cache_efficiency', 0):.1f}%")
+                    st.metric("稀疏度", f"{stats.get('sparsity', 0):.1f}%")
+                with col2:
+                    st.metric("峰值内存", f"{stats.get('peak_memory_mb', 0):.2f} MB")
+                    st.metric("平均层能量", f"{stats.get('avg_layer_energy', 0):.4f}")
+                with col3:
+                    st.metric("生成 Token", stats.get('num_generated_tokens', 0))
+                    st.metric("缓存 Token", stats.get('num_cached_tokens', 0))
+
+        # 统计柱状图对比
+        fig = comparison_visualizer.create_stats_comparison(
+            model_stats,
+            title="Statistics Comparison"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 层级能量热力图对比
+        st.markdown("#### 层级能量热力图对比:")
+        fig = comparison_visualizer.create_layer_energy_comparison_heatmap(
+            model_data,
+            title="Layer Energy Comparison"
+        )
+        st.plotly_chart(fig, use_container_width=True)
