@@ -198,11 +198,16 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
             title="KV Cache 综合仪表盘"
         )
         st.plotly_chart(fig, use_container_width=True)
+        _render_load_more_button("dashboard")
 
     with tab6:
         if st.session_state.current_position > 0:
+            min_limit = min(
+                st.session_state.get('display_token_limit', 50),
+                st.session_state.current_position
+            )
             fig = visualizer.create_layer_energy_heatmap(
-                k_cache_list[:st.session_state.current_position],
+                k_cache_list[:min_limit],
                 title="层级能量热力图"
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -238,12 +243,17 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                     st.plotly_chart(fig, use_container_width=True)
 
                 else:  # Summary
+                    min_limit = min(
+                        st.session_state.get('display_token_limit', 50),
+                        st.session_state.current_position
+                    )
                     fig = visualizer.create_attention_summary(
-                        attn_weights_list[:st.session_state.current_position],
+                        attn_weights_list[:min_limit],
                         cleaned_tokens,
                         title="Attention Summary"
                     )
                     st.plotly_chart(fig, use_container_width=True)
+                    _render_load_more_button("attention")
             else:
                 st.info("当前 token 的 Attention 数据不可用")
         else:
@@ -259,16 +269,20 @@ def render_visualization_tabs(k_cache_list, v_cache_list, stats, clean_bpe_token
                 horizontal=True
             )
 
+            min_limit = min(
+                st.session_state.get('display_token_limit', 50),
+                st.session_state.current_position
+            )
             if importance_view_mode == "排序柱状图":
                 fig = visualizer.create_token_importance(
-                    k_cache_list[:st.session_state.current_position],
+                    k_cache_list[:min_limit],
                     cleaned_tokens,
                     title="Token 重要性排序 (KV Energy)"
                 )
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 fig = visualizer.create_token_importance_heatmap(
-                    k_cache_list[:st.session_state.current_position],
+                    k_cache_list[:min_limit],
                     cleaned_tokens,
                     title="Token 重要性热力图"
                 )
