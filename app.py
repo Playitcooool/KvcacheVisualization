@@ -25,6 +25,7 @@ from ui import (
     render_replay_control,
     render_export_buttons,
     render_visualization_tabs,
+    render_comparison_panel,
     create_two_column_layout,
 )
 
