@@ -700,3 +700,112 @@ class KVCacheVisualizer:
             legend=dict(y=0.99, x=0.01)
         )
         return fig
+
+    def calculate_attention_stats_by_layer(
+        self,
+        attn_weights_list: List[torch.Tensor]
+    ) -> Dict[int, Dict[str, float]]:
+        """
+        计算 attention 统计指标（按 head）。
+
+        Args:
+            attn_weights_list: 每个位置的 attention 权重列表 [batch, heads, seq, seq]
+
+        Returns:
+            Dict {head_idx: {coverage, sparsity, max_val}}
+
+        Note:
+            对于 GQA（Grouped Query Attention）模型，attention tensor 的第二个维度
+            大小为 num_kv_heads（而非 num_layers），因此本方法迭代 num_heads 次，
+            统计每个 kv_head 的指标。这是 GQA 模型的已知限制，因为 attention tensor
+            只包含 kv_heads 维度，不包含 layer 维度。
+        """
+        if not attn_weights_list:
+            return {}
+
+        stats = {}
+        COV_THRESHOLD = 0.01
+        SPARSITY_THRESHOLD = 0.001
+
+        for head_idx in range(self.num_heads):
+            all_attn = []
+            for attn in attn_weights_list:
+                if attn is None:
+                    continue
+                attn_np = self._tensor_to_numpy(attn)
+                # Validate tensor shape: [batch, heads, seq, seq]
+                if attn_np.ndim != 4:
+                    continue
+                # [batch, heads, seq, seq] -> take batch=0, specific head
+                head_attn = attn_np[0, head_idx, :, :]  # [seq, seq]
+                all_attn.append(head_attn)
+
+            if not all_attn:
+                stats[head_idx] = {'coverage': 0.0, 'sparsity': 0.0, 'max_val': 0.0}
+                continue
+
+            # Concatenate all positions along seq axis
+            concat = np.concatenate([a[np.newaxis, :] for a in all_attn], axis=0)  # [positions, seq]
+            concat = concat.flatten()
+
+            coverage = float(np.mean(concat > COV_THRESHOLD))
+            sparsity = float(np.mean(concat < SPARSITY_THRESHOLD))
+            max_val = float(np.max(concat))
+
+            stats[head_idx] = {
+                'coverage': coverage,
+                'sparsity': sparsity,
+                'max_val': max_val
+            }
+
+        return stats
+
+    def create_attention_layer_stats(
+        self,
+        stats_by_layer: Dict[int, Dict[str, float]],
+        metric: str = "coverage",
+        title: str = "Attention Stats by Layer"
+    ) -> go.Figure:
+        """
+        创建按 head 统计的折线图。
+
+        Args:
+            stats_by_layer: calculate_attention_stats_by_layer() 的输出。
+                对于 GQA 模型，这表示每个 kv_head 的统计。
+            metric: "coverage" | "sparsity" | "max_val"
+            title: 图表标题
+
+        Returns:
+            Plotly Figure
+        """
+        if not stats_by_layer:
+            return go.Figure()
+
+        layers = sorted(stats_by_layer.keys())
+        x = [l + 1 for l in layers]
+        y = [stats_by_layer[l].get(metric, 0.0) for l in layers]
+
+        metric_labels = {
+            'coverage': 'Attention Coverage (%)',
+            'sparsity': 'Attention Sparsity (%)',
+            'max_val': 'Max Attention'
+        }
+
+        fig = go.Figure(go.Scatter(
+            x=x,
+            y=y,
+            mode='lines+markers',
+            name=metric_labels.get(metric, metric),
+            line=dict(color='steelblue'),
+            marker=dict(size=8)
+        ))
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            xaxis_title="Layer",
+            yaxis_title=metric_labels.get(metric, metric),
+            width=600,
+            height=400,
+            showlegend=False
+        )
+        return fig

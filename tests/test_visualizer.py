@@ -40,3 +40,25 @@ def test_create_layer_energy_evolution():
     assert isinstance(fig, go.Figure)
     # Should have 2 lines (one per layer)
     assert len(fig.data) == 2
+
+def test_calculate_attention_stats_by_layer():
+    viz = KVCacheVisualizer(num_layers=2, num_heads=2, head_dim=8)
+    # attn_weights: [batch=1, heads=2, seq=3, seq=3]
+    attn = torch.softmax(torch.randn(1, 2, 3, 3), dim=-1)
+    attn_list = [attn, attn, attn]
+    stats = viz.calculate_attention_stats_by_layer(attn_list)
+    assert isinstance(stats, dict)
+    assert len(stats) == 2  # 2 layers
+    assert 'coverage' in stats[0]
+    assert 'sparsity' in stats[0]
+    assert 'max_val' in stats[0]
+
+def test_create_attention_layer_stats():
+    viz = KVCacheVisualizer(num_layers=2, num_heads=2, head_dim=8)
+    stats = {
+        0: {'coverage': 0.5, 'sparsity': 0.3, 'max_val': 0.8},
+        1: {'coverage': 0.6, 'sparsity': 0.2, 'max_val': 0.9},
+    }
+    fig = viz.create_attention_layer_stats(stats, metric='coverage')
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) == 1
