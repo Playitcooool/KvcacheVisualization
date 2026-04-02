@@ -132,6 +132,20 @@ def render_sidebar():
             st.markdown(f"- 🔢 量化: `{config.get('quantization')}`")
         st.markdown(f"- 💻 设备: `{st.session_state.model_loader.current_device if st.session_state.model_loader else 'N/A'}`")
 
+        # KV Cache 缓存大小设置
+        st.markdown("---")
+        st.markdown("**📦 KV Cache 缓存大小:**")
+        max_history = st.slider(
+            "缓存 token 数量",
+            min_value=10,
+            max_value=500,
+            value=st.session_state.get('max_history_length', 100),
+            step=10,
+            help="设置 KV Cache 历史记录的最大长度。较大值占用更多内存。"
+        )
+        st.session_state.max_history_length = max_history
+        st.caption(f"当前: {max_history} tokens")
+
     st.markdown("---")
     st.markdown("**使用说明:**")
     st.markdown("""

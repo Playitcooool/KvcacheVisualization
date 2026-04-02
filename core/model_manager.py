@@ -22,6 +22,7 @@ class ModelConfig:
     checkpoint_path: str = ""
     device: str = "auto"
     quantization: str = None
+    max_history_length: int = 100  # KV Cache 历史记录最大长度
 
 
 class ModelManager:
@@ -90,7 +91,8 @@ class ModelManager:
             simulator = KVCacheSimulator(
                 num_layers=num_layers,
                 num_heads=num_heads,
-                head_dim=head_dim
+                head_dim=head_dim,
+                max_history_length=config.max_history_length
             )
 
             visualizer = KVCacheVisualizer(

@@ -8,7 +8,7 @@ import sys
 
 from model_loader import ModelLoader, HuggingFaceLoader
 from kvcache_extractor import KVCacheExtractor
-from kvcache_simulator import KVCacheSimulator, MAX_HISTORY_LENGTH
+from kvcache_simulator import KVCacheSimulator
 from visualizer import KVCacheVisualizer
 from device_utils import get_available_device, list_available_devices
 from i18n import t, get_text, TRANSLATIONS
@@ -67,6 +67,7 @@ def init_session_state():
         'streaming_max_tokens': 50, 'streaming_batch_size': 5,
         'generated_text': '', 'generation_input_ids': None,
         'attention_mask': None, 'generation_thread': None,
+        'max_history_length': 100,  # KV Cache 缓存大小
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -104,7 +105,8 @@ def load_model(model_type: str, model_name: str = "gpt2", checkpoint_path: str =
         st.session_state.extractor = KVCacheExtractor(
             num_layers=num_layers, num_heads=num_heads, num_kv_heads=num_kv_heads, head_dim=head_dim)
         st.session_state.simulator = KVCacheSimulator(
-            num_layers=num_layers, num_heads=num_heads, head_dim=head_dim)
+            num_layers=num_layers, num_heads=num_heads, head_dim=head_dim,
+            max_history_length=st.session_state.get('max_history_length', 100))
         st.session_state.visualizer = KVCacheVisualizer(
             num_layers=num_layers, num_heads=num_heads, head_dim=head_dim)
 
@@ -252,7 +254,7 @@ def run_generation_streaming(prompt: str, max_new_tokens: int = 50, batch_size: 
             pos = st.session_state.current_position + i + 1
             hist_idx = extractor_start_idx + i
 
-            if len(simulator.history) >= MAX_HISTORY_LENGTH:
+            if len(simulator.history) >= st.session_state.get('max_history_length', 100):
                 st.session_state.generation_complete = True
                 st.session_state.streaming_pending = False
                 st.session_state.is_generating = False

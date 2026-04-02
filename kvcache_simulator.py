@@ -31,12 +31,14 @@ class KVCacheSimulator:
         num_layers: int = 12,
         num_heads: int = 12,
         head_dim: int = 64,
-        max_seq_len: int = 512
+        max_seq_len: int = 512,
+        max_history_length: int = MAX_HISTORY_LENGTH
     ):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.max_seq_len = max_seq_len
+        self.max_history_length = max_history_length
 
         # 历史记录
         self.history: List[KVCacheEntry] = []
@@ -54,6 +56,10 @@ class KVCacheSimulator:
         """添加一个新的 KV Cache 条目"""
         if position <= self.current_position:
             # 覆盖已有位置或跳过
+            return
+
+        # 检查是否超过最大历史长度
+        if len(self.history) >= self.max_history_length:
             return
 
         entry = KVCacheEntry(
