@@ -486,7 +486,7 @@ class KVCacheVisualizer:
                     y=attn_display,
                     marker_color='steelblue',
                     showlegend=False,
-                    text=[f"{v:.2f}" for v in attn_display],
+                    text=[f"{float(v):.2f}" for v in attn_display],
                     textposition='outside'
                 ),
                 row=i + 1,
